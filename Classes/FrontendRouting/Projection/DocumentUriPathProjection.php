@@ -1,0 +1,1075 @@
+<?php
+
+declare(strict_types=1);
+
+namespace Breadlesscode\NodeTypes\Folder\FrontendRouting\Projection;
+
+use Doctrine\Common\Collections\Expr\Value;
+use Doctrine\DBAL\Connection;
+use Doctrine\DBAL\Exception as DBALException;
+use Doctrine\DBAL\Types\Types;
+use Neos\ContentRepository\Core\DimensionSpace\DimensionSpacePoint;
+use Neos\ContentRepository\Core\DimensionSpace\OriginDimensionSpacePoint;
+use Neos\ContentRepository\Core\EventStore\EventInterface;
+use Neos\ContentRepository\Core\Feature\Common\InterdimensionalSiblings;
+use Neos\ContentRepository\Core\Feature\DimensionSpaceAdjustment\Event\DimensionShineThroughWasAdded;
+use Neos\ContentRepository\Core\Feature\DimensionSpaceAdjustment\Event\DimensionSpacePointWasMoved;
+use Neos\ContentRepository\Core\Feature\NodeCreation\Event\NodeAggregateWithNodeWasCreated;
+use Neos\ContentRepository\Core\Feature\NodeModification\Event\NodePropertiesWereSet;
+use Neos\ContentRepository\Core\Feature\NodeMove\Event\NodeAggregateWasMoved;
+use Neos\ContentRepository\Core\Feature\NodeRemoval\Event\NodeAggregateWasRemoved;
+use Neos\ContentRepository\Core\Feature\NodeTypeChange\Event\NodeAggregateTypeWasChanged;
+use Neos\ContentRepository\Core\Feature\NodeVariation\Event\NodeGeneralizationVariantWasCreated;
+use Neos\ContentRepository\Core\Feature\NodeVariation\Event\NodePeerVariantWasCreated;
+use Neos\ContentRepository\Core\Feature\NodeVariation\Event\NodeSpecializationVariantWasCreated;
+use Neos\ContentRepository\Core\Feature\RootNodeCreation\Event\RootNodeAggregateDimensionsWereUpdated;
+use Neos\ContentRepository\Core\Feature\RootNodeCreation\Event\RootNodeAggregateWithNodeWasCreated;
+use Neos\ContentRepository\Core\Feature\SubtreeTagging\Event\SubtreeWasTagged;
+use Neos\ContentRepository\Core\Feature\SubtreeTagging\Event\SubtreeWasUntagged;
+use Neos\ContentRepository\Core\NodeType\NodeTypeManager;
+use Neos\ContentRepository\Core\NodeType\NodeTypeName;
+use Neos\ContentRepository\Core\Projection\ProjectionInterface;
+use Neos\ContentRepository\Core\Projection\ProjectionStatus;
+use Neos\ContentRepository\Core\SharedModel\Node\NodeAggregateId;
+use Neos\ContentRepository\Core\SharedModel\Node\PropertyName;
+use Neos\ContentRepository\Dbal\DbalSchemaDiff;
+use Neos\EventStore\Model\EventEnvelope;
+use Neos\Neos\Domain\Model\SiteNodeName;
+use Neos\Neos\Domain\SubtreeTagging\NeosSubtreeTag;
+use Neos\Neos\FrontendRouting\Exception\NodeNotFoundException;
+use Neos\Neos\FrontendRouting\Projection\DocumentNodeInfo;
+use Neos\Neos\FrontendRouting\Projection\DocumentTypeClassification;
+use Neos\Neos\FrontendRouting\Projection\DocumentUriPathFinder;
+use Neos\Neos\FrontendRouting\Projection\DocumentUriPathSchemaBuilder;
+
+/**
+ * @implements ProjectionInterface<DocumentUriPathFinder>
+ * @internal implementation detail to manage document node uris. For resolving please use the NodeUriBuilder and for matching the Router.
+ */
+final class DocumentUriPathProjection implements ProjectionInterface
+{
+    public const COLUMN_TYPES_DOCUMENT_URIS = [
+        'shortcutTarget' => Types::JSON,
+    ];
+
+    private DocumentUriPathFinder $documentUriPathFinder;
+
+    /**
+     * @var array<string, DocumentTypeClassification>
+     */
+    private array $documentTypeClassificationRuntimeCache = [];
+
+    public function __construct(
+        private readonly NodeTypeManager $nodeTypeManager,
+        private readonly Connection $dbal,
+        private readonly string $tableNamePrefix,
+    ) {
+        $this->documentUriPathFinder = new DocumentUriPathFinder($this->dbal, $this->tableNamePrefix);
+    }
+
+    public function setUp(): void
+    {
+        foreach ($this->determineRequiredSqlStatements() as $statement) {
+            $this->dbal->executeStatement($statement);
+        }
+    }
+
+    public function status(): ProjectionStatus
+    {
+        try {
+            $this->dbal->connect();
+        } catch (\Throwable $e) {
+            return ProjectionStatus::error(sprintf('Failed to connect to database: %s', $e->getMessage()));
+        }
+        try {
+            $requiredSqlStatements = $this->determineRequiredSqlStatements();
+        } catch (\Throwable $e) {
+            return ProjectionStatus::error(sprintf('Failed to determine required SQL statements: %s', $e->getMessage()));
+        }
+        if ($requiredSqlStatements !== []) {
+            return ProjectionStatus::setupRequired(sprintf('The following SQL statement%s required: %s', count($requiredSqlStatements) !== 1 ? 's are' : ' is', implode(chr(10), $requiredSqlStatements)));
+        }
+        return ProjectionStatus::ok();
+    }
+
+    /**
+     * @return array<string>
+     */
+    private function determineRequiredSqlStatements(): array
+    {
+        $schema = (new DocumentUriPathSchemaBuilder($this->tableNamePrefix))->buildSchema($this->dbal);
+        $statements = DbalSchemaDiff::determineRequiredSqlStatements($this->dbal, $schema);
+
+        return $statements;
+    }
+
+
+    public function resetState(): void
+    {
+        $this->truncateDatabaseTables();
+    }
+
+    private function truncateDatabaseTables(): void
+    {
+        try {
+            $this->dbal->exec('TRUNCATE ' . $this->tableNamePrefix . '_uri');
+        } catch (DBALException $e) {
+            throw new \RuntimeException(sprintf('Failed to truncate tables: %s', $e->getMessage()), 1599655382, $e);
+        }
+    }
+
+    public function apply(EventInterface $event, EventEnvelope $eventEnvelope): void
+    {
+        match ($event::class) {
+            RootNodeAggregateWithNodeWasCreated::class => $this->whenRootNodeAggregateWithNodeWasCreated($event),
+            RootNodeAggregateDimensionsWereUpdated::class => $this->whenRootNodeAggregateDimensionsWereUpdated($event),
+            NodeAggregateWithNodeWasCreated::class => $this->whenNodeAggregateWithNodeWasCreated($event),
+            NodeAggregateTypeWasChanged::class => $this->whenNodeAggregateTypeWasChanged($event),
+            NodePeerVariantWasCreated::class => $this->whenNodePeerVariantWasCreated($event),
+            NodeGeneralizationVariantWasCreated::class => $this->whenNodeGeneralizationVariantWasCreated($event),
+            NodeSpecializationVariantWasCreated::class => $this->whenNodeSpecializationVariantWasCreated($event),
+            SubtreeWasTagged::class => $this->whenSubtreeWasTagged($event),
+            SubtreeWasUntagged::class => $this->whenSubtreeWasUntagged($event),
+            NodeAggregateWasRemoved::class => $this->whenNodeAggregateWasRemoved($event),
+            NodePropertiesWereSet::class => $this->whenNodePropertiesWereSet($event),
+            NodeAggregateWasMoved::class => $this->whenNodeAggregateWasMoved($event),
+            DimensionSpacePointWasMoved::class => $this->whenDimensionSpacePointWasMoved($event),
+            DimensionShineThroughWasAdded::class => $this->whenDimensionShineThroughWasAdded($event),
+            default => null,
+        };
+    }
+
+    public function getState(): DocumentUriPathFinder
+    {
+        return $this->documentUriPathFinder;
+    }
+
+    private function whenRootNodeAggregateWithNodeWasCreated(RootNodeAggregateWithNodeWasCreated $event): void
+    {
+        if (!$event->workspaceName->isLive()) {
+            return;
+        }
+        foreach ($event->coveredDimensionSpacePoints as $dimensionSpacePoint) {
+            $this->insertNode([
+                'uriPath' => '',
+                'nodeAggregateIdPath' => $event->nodeAggregateId->value,
+                'dimensionSpacePointHash' => $dimensionSpacePoint->hash,
+                'nodeAggregateId' => $event->nodeAggregateId->value,
+                'nodeTypeName' => $event->nodeTypeName->value,
+            ]);
+        }
+    }
+
+    private function whenRootNodeAggregateDimensionsWereUpdated(RootNodeAggregateDimensionsWereUpdated $event): void
+    {
+        if (!$event->workspaceName->isLive()) {
+            return;
+        }
+
+        // Just to figure out current NodeTypeName. This is the same for the aggregate in all dimensionSpacePoints.
+        $pointHashes = $event->coveredDimensionSpacePoints->getPointHashes();
+        $anyPointHash = reset($pointHashes);
+        // There is always at least one dimension space point covered, even in a zero-dimensional cr.
+        // Zero-dimensional means DimensionSpacePoint::fromArray([])->hash
+        assert(is_string($anyPointHash));
+
+        $nodeInSomeDimension = $this->tryGetNode(fn() => $this->documentUriPathFinder->getByIdAndDimensionSpacePointHash(
+            $event->nodeAggregateId,
+            $anyPointHash
+        ));
+
+        if ($nodeInSomeDimension === null) {
+            return;
+        }
+
+        $this->dbal->delete(
+            $this->tableNamePrefix . '_uri',
+            [
+                'nodeAggregateId' => $event->nodeAggregateId->value
+            ]
+        );
+
+        foreach ($event->coveredDimensionSpacePoints as $dimensionSpacePoint) {
+            $this->insertNode([
+                'uriPath' => '',
+                'nodeAggregateIdPath' => $event->nodeAggregateId->value,
+                'dimensionSpacePointHash' => $dimensionSpacePoint->hash,
+                'nodeAggregateId' => $event->nodeAggregateId->value,
+                'nodeTypeName' => $nodeInSomeDimension->getNodeTypeName()->value,
+            ]);
+        }
+    }
+
+    private function whenNodeAggregateWithNodeWasCreated(NodeAggregateWithNodeWasCreated $event): void
+    {
+        if (!$event->workspaceName->isLive()) {
+            return;
+        }
+        $documentTypeClassification = $this->getDocumentTypeClassification($event->nodeTypeName);
+        if ($documentTypeClassification === DocumentTypeClassification::CLASSIFICATION_NONE) {
+            return;
+        }
+
+        $propertyValues = $event->initialPropertyValues->getPlainValues();
+        $uriPathSegment = ($propertyValues['uriPathSegment'] ?? '') ?: $event->nodeAggregateId->value;
+
+        $shortcutTarget = null;
+        if ($documentTypeClassification === DocumentTypeClassification::CLASSIFICATION_SHORTCUT) {
+            $shortcutTarget = [
+                'mode' => $propertyValues['targetMode'] ?? 'firstChildNode',
+                'target' => $propertyValues['target'] ?? null,
+            ];
+        }
+
+        foreach ($event->succeedingSiblingsForCoverage->toDimensionSpacePointSet() as $dimensionSpacePoint) {
+            $parentNode = $this->tryGetNode(fn() => $this->documentUriPathFinder->getByIdAndDimensionSpacePointHash(
+                $event->parentNodeAggregateId,
+                $dimensionSpacePoint->hash
+            ));
+            if ($parentNode === null) {
+                // this should not happen
+                continue;
+            }
+            /** @var DocumentNodeInfo|null $precedingNode */
+            $precedingNode = null;
+
+            $succeedingSiblingNodeAggregateId = $event->succeedingSiblingsForCoverage->getSucceedingSiblingIdForDimensionSpacePoint($dimensionSpacePoint);
+            if ($succeedingSiblingNodeAggregateId === null) {
+                $precedingNode = $this->tryGetNode(fn() => $this->documentUriPathFinder->getLastChildNode(
+                    $parentNode->getNodeAggregateId(),
+                    $dimensionSpacePoint->hash
+                ));
+                if ($precedingNode !== null) {
+                    // make the new node the new succeeding node of the previously last child
+                    // (= insert at the end of all children)
+                    $this->updateNode($precedingNode, [
+                        'succeedingNodeAggregateId' => $event->nodeAggregateId->value
+                    ]);
+                }
+            } else {
+                $precedingNode = $this->tryGetNode(fn() => $this->documentUriPathFinder->getPrecedingNode(
+                    $succeedingSiblingNodeAggregateId,
+                    $parentNode->getNodeAggregateId(),
+                    $dimensionSpacePoint->hash
+                ));
+                if ($precedingNode !== null) {
+                    // make the new node the new succeeding node of the previously preceding node
+                    // of the specified succeeding node (= re-wire <preceding>-<succeeding> to <preceding>-<new node>)
+                    $this->updateNode($precedingNode, [
+                        'succeedingNodeAggregateId' => $event->nodeAggregateId->value
+                    ]);
+                }
+                $this->updateNodeByIdAndDimensionSpacePointHash(
+                    $succeedingSiblingNodeAggregateId,
+                    $dimensionSpacePoint->hash,
+                    ['precedingNodeAggregateId' => $event->nodeAggregateId->value]
+                );
+            }
+
+            $nodeAggregateIdPath = $parentNode->getNodeAggregateIdPath()
+                . '/' . $event->nodeAggregateId->value;
+
+            $uriPath = '';
+            if ($parentNode->isRoot() && $event->nodeName !== null) {
+                $siteNodeName = SiteNodeName::fromNodeName($event->nodeName);
+            } else {
+                $uriPath = $this->generateUriPath(
+                    $uriPathSegment,
+                    $parentNode,
+                    $dimensionSpacePoint
+                );
+                $siteNodeName = $parentNode->getSiteNodeName();
+            }
+
+            $this->insertNode([
+                'nodeAggregateId' => $event->nodeAggregateId->value,
+                'uriPath' => $uriPath,
+                'nodeAggregateIdPath' => $nodeAggregateIdPath,
+                'siteNodeName' => $siteNodeName->value,
+                'dimensionSpacePointHash' => $dimensionSpacePoint->hash,
+                'originDimensionSpacePointHash' => $event->originDimensionSpacePoint->hash,
+                'parentNodeAggregateId' => $parentNode->getNodeAggregateId()->value,
+                'precedingNodeAggregateId' => $precedingNode?->getNodeAggregateId()->value,
+                'succeedingNodeAggregateId' => $succeedingSiblingNodeAggregateId?->value,
+                'shortcutTarget' => $shortcutTarget,
+                'nodeTypeName' => $event->nodeTypeName->value,
+                'disabled' => $parentNode->getDisableLevel(),
+                'removed' => $parentNode->getRemovedLevel(),
+                'isPlaceholder' => (int)($documentTypeClassification === DocumentTypeClassification::CLASSIFICATION_UNKNOWN)
+            ]);
+        }
+    }
+
+    private function generateUriPath(
+        string $uriPathSegment,
+        DocumentNodeInfo $parentNode,
+        DimensionSpacePoint $dimensionSpacePoint
+    ): string {
+        $uriPath = $uriPathSegment;
+
+        $parentNodeForUriCreation = $parentNode;
+
+        while (!$parentNodeForUriCreation->isRoot()) {
+            $nodeType = $this->nodeTypeManager->getNodeType($parentNodeForUriCreation->getNodeTypeName());
+
+            if ($nodeType !== null && !$nodeType->isOfType('Breadlesscode.NodeTypes.Folder:Document.Folder')) {
+                $basename = basename($parentNodeForUriCreation->getUriPath());
+                if (!empty($basename)) {
+                    $uriPath =  $basename . '/' . $uriPath;
+                }
+            }
+
+            $parentNodeForUriCreation = $this->tryGetNode(fn() => $this->documentUriPathFinder->getByIdAndDimensionSpacePointHash(
+                $parentNodeForUriCreation->getParentNodeAggregateId(),
+                $dimensionSpacePoint->hash
+            ));
+
+            // Break if parent couldn't be found (shouldn't happen, but safety check)
+            if ($parentNodeForUriCreation === null) {
+                break;
+            }
+        }
+
+        return $uriPath;
+    }
+
+    // Calculate the new parent's URI path with folder-aware logic
+    // This skips folder-type nodes and returns just the parent's path
+    private function generateParentUriPath(
+        DocumentNodeInfo $parentNode,
+        DimensionSpacePoint $dimensionSpacePoint
+    ): string {
+        $pathSegments = [];
+
+        $currentNode = $parentNode;
+        while (!$currentNode->isRoot()) {
+            $nodeType = $this->nodeTypeManager->getNodeType($currentNode->getNodeTypeName());
+
+            if ($nodeType !== null && !$nodeType->isOfType('Breadlesscode.NodeTypes.Folder:Document.Folder')) {
+                $basename = basename($currentNode->getUriPath());
+                if (!empty($basename)) {
+                    array_unshift($pathSegments, $basename);
+                }
+            }
+
+            $currentNode = $this->tryGetNode(fn() => $this->documentUriPathFinder->getByIdAndDimensionSpacePointHash(
+                $currentNode->getParentNodeAggregateId(),
+                $dimensionSpacePoint->hash
+            ));
+
+            // Break if parent couldn't be found (shouldn't happen, but safety check)
+            if ($currentNode === null) {
+                break;
+            }
+        }
+
+        return implode('/', $pathSegments);
+    }
+
+    private function whenNodeAggregateTypeWasChanged(NodeAggregateTypeWasChanged $event): void
+    {
+        if (!$event->workspaceName->isLive()) {
+            return;
+        }
+        switch ($this->getDocumentTypeClassification($event->newNodeTypeName)) {
+            case DocumentTypeClassification::CLASSIFICATION_SHORTCUT:
+                // The node has been turned into a shortcut node, but since the shortcut mode is not yet set
+                // we'll set it to "firstChildNode" in order to prevent an invalid mode
+                $this->updateNodeQuery('SET shortcuttarget = COALESCE(shortcuttarget,\'{"mode":"firstChildNode","target":null}\'), nodeTypeName=:nodeTypeName, isPlaceholder=:isPlaceholder
+                WHERE nodeAggregateId = :nodeAggregateId', [
+                    'nodeAggregateId' => $event->nodeAggregateId->value,
+                    'nodeTypeName' => $event->newNodeTypeName->value,
+                    'isPlaceholder' => 0
+                ]);
+                break;
+            case DocumentTypeClassification::CLASSIFICATION_DOCUMENT:
+                $this->updateNodeQuery('SET shortcuttarget = NULL, nodeTypeName=:nodeTypeName, isPlaceholder=:isPlaceholder
+                WHERE nodeAggregateId = :nodeAggregateId', [
+                    'nodeAggregateId' => $event->nodeAggregateId->value,
+                    'nodeTypeName' => $event->newNodeTypeName->value,
+                    'isPlaceholder' => 0
+                ]);
+                break;
+            case DocumentTypeClassification::CLASSIFICATION_SITE:
+                // Sites cannot be moved or type-changed to anything else, so it must have been a site befor
+                // -> nothing to do
+                break;
+            case DocumentTypeClassification::CLASSIFICATION_UNKNOWN:
+            case DocumentTypeClassification::CLASSIFICATION_NONE:
+                // @todo: probably set to isPlaceholder: true if anything is found
+                break;
+        }
+    }
+
+    private function whenNodePeerVariantWasCreated(NodePeerVariantWasCreated $event): void
+    {
+        if (!$event->workspaceName->isLive()) {
+            return;
+        }
+        $this->copyVariants(
+            $event->nodeAggregateId,
+            $event->sourceOrigin,
+            $event->peerOrigin,
+            $event->peerSucceedingSiblings
+        );
+    }
+
+    private function whenNodeGeneralizationVariantWasCreated(NodeGeneralizationVariantWasCreated $event): void
+    {
+        if (!$event->workspaceName->isLive()) {
+            return;
+        }
+        $this->copyVariants(
+            $event->nodeAggregateId,
+            $event->sourceOrigin,
+            $event->generalizationOrigin,
+            $event->variantSucceedingSiblings
+        );
+    }
+
+    private function whenNodeSpecializationVariantWasCreated(NodeSpecializationVariantWasCreated $event): void
+    {
+        if (!$event->workspaceName->isLive()) {
+            return;
+        }
+        $this->copyVariants(
+            $event->nodeAggregateId,
+            $event->sourceOrigin,
+            $event->specializationOrigin,
+            $event->specializationSiblings
+        );
+    }
+
+    private function copyVariants(
+        NodeAggregateId $nodeAggregateId,
+        OriginDimensionSpacePoint $sourceOrigin,
+        OriginDimensionSpacePoint $targetOrigin,
+        InterdimensionalSiblings $interdimensionalSiblings,
+    ): void {
+        $sourceNode = $this->tryGetNode(fn() => $this->documentUriPathFinder->getByIdAndDimensionSpacePointHash(
+            $nodeAggregateId,
+            $sourceOrigin->hash
+        ));
+        if ($sourceNode === null) {
+            // Probably not a document node
+            return;
+        }
+        foreach ($interdimensionalSiblings as $interdimensionalSibling) {
+            // Especially when importing a site it can happen that variants are created in a "non-deterministic" order,
+            // so we need to first make sure a target variant doesn't exist:
+            $this->deleteNodeByIdAndDimensionSpacePointHash($nodeAggregateId, $interdimensionalSibling->dimensionSpacePoint->hash);
+
+            $targetNode = $sourceNode
+                ->withDimensionSpacePoint($interdimensionalSibling->dimensionSpacePoint)
+                ->withOriginDimensionSpacePoint($targetOrigin)
+                ->withoutSiblings();
+
+            // check the parent in the "target" dimensionSpacePoint for the "URI prefix",
+            // may be different, see neos/neos-development-collection#5090
+            $parentNode = $this->tryGetNode(fn() => $this->documentUriPathFinder->getByIdAndDimensionSpacePointHash(
+                $sourceNode->getParentNodeAggregateId(),
+                $interdimensionalSibling->dimensionSpacePoint->hash
+            ));
+            if ($parentNode !== null) {
+                // Check if this is a folder node - use folder-aware URI generation
+                $nodeType = $this->nodeTypeManager->getNodeType($sourceNode->getNodeTypeName());
+                if ($nodeType !== null && $nodeType->isOfType('Breadlesscode.NodeTypes.Folder:Document.Folder')) {
+                    // For folder nodes, use the parent's URI path directly (folders don't contribute to URIs)
+                    $uriPath = $parentNode->getUriPath();
+                } else {
+                    $uriPathSegments = explode('/', $sourceNode->getUriPath());
+                    $uriPathSegment = $uriPathSegments[array_key_last($uriPathSegments)];
+                    $uriPath = $parentNode->getUriPath() === ''
+                        ? $uriPathSegment
+                        : $parentNode->getUriPath() . '/' . $uriPathSegment;
+
+                    $targetNode = $targetNode->withUriPath($uriPath);
+                }
+            }
+
+            $this->insertNode($targetNode->toArray());
+            $this->connectNodeWithSiblings($targetNode, $targetNode->getParentNodeAggregateId(), $interdimensionalSibling->nodeAggregateId);
+        }
+    }
+
+    private function whenSubtreeWasTagged(SubtreeWasTagged $event): void
+    {
+        if (!$event->workspaceName->isLive() || !($event->tag === NeosSubtreeTag::disabled() || $event->tag === NeosSubtreeTag::removed())) {
+            return;
+        }
+        foreach ($event->affectedDimensionSpacePoints as $dimensionSpacePoint) {
+            $node = $this->tryGetNode(fn() => $this->documentUriPathFinder->getByIdAndDimensionSpacePointHash(
+                $event->nodeAggregateId,
+                $dimensionSpacePoint->hash
+            ));
+            if ($node === null) {
+                // Probably not a document node
+                continue;
+            }
+            $tagColumn = $event->tag->value;
+            $this->updateNodeQuery('SET ' . $tagColumn . ' = ' . $tagColumn . ' + 1
+                    WHERE dimensionSpacePointHash = :dimensionSpacePointHash
+                        AND (
+                            nodeAggregateId = :nodeAggregateId
+                            OR nodeAggregateIdPath LIKE :childNodeAggregateIdPathPrefix
+                        )', [
+                'dimensionSpacePointHash' => $dimensionSpacePoint->hash,
+                'nodeAggregateId' => $event->nodeAggregateId->value,
+                'childNodeAggregateIdPathPrefix' => $node->getNodeAggregateIdPath() . '/%',
+            ]);
+        }
+    }
+
+    private function whenSubtreeWasUntagged(SubtreeWasUntagged $event): void
+    {
+        if (!$event->workspaceName->isLive() || !($event->tag === NeosSubtreeTag::disabled() || $event->tag === NeosSubtreeTag::removed())) {
+            return;
+        }
+
+        foreach ($event->affectedDimensionSpacePoints as $dimensionSpacePoint) {
+            $node = $this->tryGetNode(fn() => $this->documentUriPathFinder->getByIdAndDimensionSpacePointHash(
+                $event->nodeAggregateId,
+                $dimensionSpacePoint->hash
+            ));
+            if ($node === null) {
+                // Probably not a document node
+                continue;
+            }
+            $tagColumn = $event->tag->value;
+            $this->updateNodeQuery('SET ' . $tagColumn . ' = ' . $tagColumn . ' - 1
+                WHERE dimensionSpacePointHash = :dimensionSpacePointHash
+                    AND (
+                        nodeAggregateId = :nodeAggregateId
+                        OR nodeAggregateIdPath LIKE :childNodeAggregateIdPathPrefix
+                    )', [
+                'dimensionSpacePointHash' => $dimensionSpacePoint->hash,
+                'nodeAggregateId' => $node->getNodeAggregateId()->value,
+                'childNodeAggregateIdPathPrefix' => $node->getNodeAggregateIdPath() . '/%',
+            ]);
+        }
+    }
+
+    private function whenNodeAggregateWasRemoved(NodeAggregateWasRemoved $event): void
+    {
+        if (!$event->workspaceName->isLive()) {
+            return;
+        }
+        foreach ($event->affectedCoveredDimensionSpacePoints as $dimensionSpacePoint) {
+            $node = $this->tryGetNode(fn() => $this->documentUriPathFinder->getByIdAndDimensionSpacePointHash(
+                $event->nodeAggregateId,
+                $dimensionSpacePoint->hash
+            ));
+            if ($node === null) {
+                // Probably not a document node
+                continue;
+            }
+
+            $this->disconnectNodeFromSiblings($node);
+
+            $this->deleteNodeQuery('WHERE dimensionSpacePointHash = :dimensionSpacePointHash
+                    AND (
+                        nodeAggregateId = :nodeAggregateId
+                        OR nodeAggregateIdPath LIKE :childNodeAggregateIdPathPrefix
+                    )', [
+                'dimensionSpacePointHash' => $dimensionSpacePoint->hash,
+                'nodeAggregateId' => $node->getNodeAggregateId()->value,
+                'childNodeAggregateIdPathPrefix' => $node->getNodeAggregateIdPath() . '/%',
+            ]);
+        }
+    }
+
+    private function whenNodePropertiesWereSet(NodePropertiesWereSet $event): void
+    {
+        if (!$event->workspaceName->isLive()) {
+            return;
+        }
+        $newPropertyValues = $event->propertyValues->getPlainValues();
+        $unsetPropertyNames = array_map(fn(PropertyName $propertyName) => $propertyName->value, iterator_to_array($event->propertiesToUnset->getIterator()));
+        if (
+            !isset($newPropertyValues['uriPathSegment'])
+            && !in_array('uriPathSegment', $unsetPropertyNames)
+            && !isset($newPropertyValues['targetMode'])
+            && !isset($newPropertyValues['target'])
+        ) {
+            return;
+        }
+
+        foreach ($event->affectedDimensionSpacePoints as $affectedDimensionSpacePoint) {
+            $node = $this->tryGetNode(fn() => $this->documentUriPathFinder->getByIdAndDimensionSpacePointHash(
+                $event->nodeAggregateId,
+                $affectedDimensionSpacePoint->hash
+            ));
+
+            if (
+                $node === null
+                || $this->getDocumentTypeClassification($node->getNodeTypeName())
+                === DocumentTypeClassification::CLASSIFICATION_SITE
+            ) {
+                // probably not a document node
+                continue;
+            }
+            if ((isset($newPropertyValues['targetMode']) || isset($newPropertyValues['target'])) && $node->isShortcut()) {
+                $shortcutTarget = $node->getShortcutTarget();
+                $shortcutTarget = [
+                    'mode' => $newPropertyValues['targetMode'] ?? $shortcutTarget['mode'],
+                    'target' => $newPropertyValues['target'] ?? $shortcutTarget['target'],
+                ];
+                $this->updateNodeByIdAndDimensionSpacePointHash(
+                    $event->nodeAggregateId,
+                    $affectedDimensionSpacePoint->hash,
+                    ['shortcutTarget' => $shortcutTarget]
+                );
+            }
+
+            if (!isset($newPropertyValues['uriPathSegment']) && !in_array('uriPathSegment', $unsetPropertyNames)) {
+                continue;
+            }
+
+            // Check if this is a folder node - folders don't appear in URIs, so skip URI updates
+            $nodeType = $this->nodeTypeManager->getNodeType($node->getNodeTypeName());
+            if ($nodeType !== null && $nodeType->isOfType('Breadlesscode.NodeTypes.Folder:Document.Folder')) {
+                continue;
+            }
+
+            $oldUriPath = $node->getUriPath();
+            $uriPathSegments = explode('/', $oldUriPath);
+            $uriPathSegments[array_key_last($uriPathSegments)] = ($newPropertyValues['uriPathSegment'] ?? '') ?: $event->nodeAggregateId->value;
+            $newUriPath = implode('/', $uriPathSegments);
+
+            $this->updateNodeQuery(
+                'SET uriPath = CONCAT(:newUriPath, SUBSTRING(uriPath, LENGTH(:oldUriPath) + 1))
+                WHERE dimensionSpacePointHash = :dimensionSpacePointHash
+                    AND (
+                        nodeAggregateId = :nodeAggregateId
+                        OR nodeAggregateIdPath LIKE :childNodeAggregateIdPathPrefix
+                    )',
+                [
+                    'newUriPath' => $newUriPath,
+                    'oldUriPath' => $oldUriPath,
+                    'dimensionSpacePointHash' => $affectedDimensionSpacePoint->hash,
+                    'nodeAggregateId' => $node->getNodeAggregateId()->value,
+                    'childNodeAggregateIdPathPrefix' => $node->getNodeAggregateIdPath() . '/%',
+                ]
+            );
+        }
+    }
+
+    private function whenNodeAggregateWasMoved(NodeAggregateWasMoved $event): void
+    {
+        if (!$event->workspaceName->isLive()) {
+            return;
+        }
+
+        foreach ($event->succeedingSiblingsForCoverage as $succeedingSiblingForCoverage) {
+            $node = $this->tryGetNode(fn() => $this->documentUriPathFinder->getByIdAndDimensionSpacePointHash(
+                $event->nodeAggregateId,
+                $succeedingSiblingForCoverage->dimensionSpacePoint->hash
+            ));
+            if (!$node) {
+                // node probably no document node, skip
+                continue;
+            }
+
+            $this->moveNode(
+                $node,
+                $event->newParentNodeAggregateId,
+                $succeedingSiblingForCoverage->nodeAggregateId,
+                $succeedingSiblingForCoverage->dimensionSpacePoint
+            );
+        }
+    }
+
+    private function moveNode(
+        DocumentNodeInfo $node,
+        ?NodeAggregateId $newParentNodeAggregateId,
+        ?NodeAggregateId $newSucceedingNodeAggregateId,
+        DimensionSpacePoint $dimensionSpacePoint
+    ): void {
+        $this->disconnectNodeFromSiblings($node);
+
+        $this->connectNodeWithSiblings($node, $newParentNodeAggregateId ?: $node->getParentNodeAggregateId(), $newSucceedingNodeAggregateId);
+
+        if (!$newParentNodeAggregateId || $newParentNodeAggregateId->equals($node->getParentNodeAggregateId())) {
+            return;
+        }
+        $newParentNode = $this->tryGetNode(fn() => $this->documentUriPathFinder->getByIdAndDimensionSpacePointHash(
+            $newParentNodeAggregateId,
+            $node->getDimensionSpacePointHash()
+        ));
+        if ($newParentNode === null) {
+            // This happens if the parent node does not exist in the moved variant.
+            // Can happen if the content dimension configuration was updated, and dimension migrations were not run.
+            return;
+        }
+
+        $oldParentNode = $this->tryGetNode(fn() => $this->documentUriPathFinder->getByIdAndDimensionSpacePointHash(
+            $node->getParentNodeAggregateId(),
+            $node->getDimensionSpacePointHash()
+        ));
+
+        $newParentUriPath = $this->generateParentUriPath(
+            $newParentNode,
+            $dimensionSpacePoint
+        );
+
+        $disabledDelta = $newParentNode->getDisableLevel() - $node->getDisableLevel();
+        if ($this->isNodeExplicitlyDisabled($node, $oldParentNode)) {
+            $disabledDelta++;
+        }
+
+        $removedDelta = $newParentNode->getRemovedLevel() - $node->getRemovedLevel();
+        if ($this->isNodeExplicitlyRemoved($node, $oldParentNode)) {
+            $removedDelta++;
+        }
+
+        $this->updateNodeQuery(
+            /** @codingStandardsIgnoreStart */
+            'SET
+                nodeAggregateIdPath = TRIM(TRAILING "/" FROM CONCAT(:newParentNodeAggregateIdPath, "/", TRIM(LEADING "/" FROM SUBSTRING(nodeAggregateIdPath, :sourceNodeAggregateIdPathOffset)))),
+                uriPath = TRIM("/" FROM CONCAT(:newParentUriPath, "/", TRIM(LEADING "/" FROM SUBSTRING(uriPath, :sourceUriPathOffset)))),
+                disabled = disabled + ' . $disabledDelta . ',
+                removed = removed + ' . $removedDelta . '
+            WHERE
+                dimensionSpacePointHash = :dimensionSpacePointHash
+                    AND (nodeAggregateId = :nodeAggregateId
+                    OR nodeAggregateIdPath LIKE :childNodeAggregateIdPathPrefix)
+            ',
+            /** @codingStandardsIgnoreEnd */
+            [
+                'nodeAggregateId' => $node->getNodeAggregateId()->value,
+                'newParentNodeAggregateIdPath' => $newParentNode->getNodeAggregateIdPath(),
+                'sourceNodeAggregateIdPathOffset'
+                => (int)strrpos($node->getNodeAggregateIdPath(), '/') + 1,
+                // we have to distinguish two cases here:
+                // - standard case: we want to move the nodes with URI /foo/bar into /target
+                //   -> we want to strip the common prefix of the node (and all descendants)
+                //      and then prepend the suffix with the new parent. Example:
+                //
+                //   /foo/bar     -> /target (+ /bar) => /target/bar
+                //   /foo/bar/baz => /target (+ /bar/baz) => /target/bar/baz
+                //
+                //
+                // - move directly underneath ROOT node of CR.
+                //   the 1st level underneath the root node (in Neos) is the Site node, which needs to have
+                //   an empty uriPath.
+                //
+                //   This is why we set the offset to the complete length, to create an empty string for the moved node
+                //   in the SQL query above. Example:
+                //
+                //   /foo/bar     -> / (+ /) => /
+                //   /foo/bar/baz => / (+ /baz) => /baz
+                //
+                'newParentUriPath' => $newParentUriPath,
+                'sourceUriPathOffset' => (int)strrpos($node->getUriPath(), '/') + 1,
+                'dimensionSpacePointHash' => $node->getDimensionSpacePointHash(),
+                'childNodeAggregateIdPathPrefix' => $node->getNodeAggregateIdPath() . '/%',
+            ]
+        );
+    }
+
+    private function isNodeExplicitlyDisabled(DocumentNodeInfo $node, DocumentNodeInfo|null $parentNode): bool
+    {
+        if ($node->getDisableLevel() === 0) {
+            return false;
+        }
+        if ($parentNode === null) {
+            return $node->getDisableLevel() !== 0;
+        }
+        return $node->getDisableLevel() - $parentNode->getDisableLevel() !== 0;
+    }
+
+    private function isNodeExplicitlyRemoved(DocumentNodeInfo $node, DocumentNodeInfo|null $parentNode): bool
+    {
+        if ($node->getRemovedLevel() === 0) {
+            return false;
+        }
+        if ($parentNode === null) {
+            return $node->getRemovedLevel() !== 0;
+        }
+        return $node->getRemovedLevel() - $parentNode->getRemovedLevel() !== 0;
+    }
+
+    private function getDocumentTypeClassification(NodeTypeName $nodeTypeName): DocumentTypeClassification
+    {
+        if (!array_key_exists($nodeTypeName->value, $this->documentTypeClassificationRuntimeCache)) {
+            // HACK: We consider the currently configured node type of the given node.
+            // This is a deliberate side effect of this projector!
+            // Note: We could add some hash over all node type decisions to the projected read model
+            // to tell whether a replay is required (e.g. if a document node type was changed to a content type vice versa)
+            // With https://github.com/neos/neos-development-collection/issues/4468 this can be compared in the `getStatus()` implementation
+            $this->documentTypeClassificationRuntimeCache[$nodeTypeName->value]
+                = DocumentTypeClassification::forNodeType($nodeTypeName, $this->nodeTypeManager);
+        }
+
+        return $this->documentTypeClassificationRuntimeCache[$nodeTypeName->value];
+    }
+
+    private function tryGetNode(\Closure $closure): ?DocumentNodeInfo
+    {
+        try {
+            return $closure();
+        } catch (NodeNotFoundException $_) {
+            /** @noinspection BadExceptionsProcessingInspection */
+            return null;
+        }
+    }
+
+    /**
+     * @param array<string,mixed> $data
+     */
+    private function insertNode(array $data): void
+    {
+        try {
+            $this->dbal->insert($this->tableNamePrefix . '_uri', $data, self::COLUMN_TYPES_DOCUMENT_URIS);
+        } catch (DBALException $e) {
+            throw new \RuntimeException(sprintf('Failed to insert node: %s', $e->getMessage()), 1599646694, $e);
+        }
+    }
+
+    /**
+     * @param array<string,mixed> $data
+     */
+    private function updateNode(DocumentNodeInfo $node, array $data): void
+    {
+        $this->updateNodeByIdAndDimensionSpacePointHash(
+            $node->getNodeAggregateId(),
+            $node->getDimensionSpacePointHash(),
+            $data
+        );
+    }
+
+    /**
+     * @param array<string,mixed> $data
+     */
+    private function updateNodeByIdAndDimensionSpacePointHash(
+        NodeAggregateId $nodeAggregateId,
+        string $dimensionSpacePointHash,
+        array $data
+    ): void {
+        try {
+            $this->dbal->update(
+                $this->tableNamePrefix . '_uri',
+                $data,
+                [
+                    'nodeAggregateId' => $nodeAggregateId->value,
+                    'dimensionSpacePointHash' => $dimensionSpacePointHash,
+                ],
+                self::COLUMN_TYPES_DOCUMENT_URIS
+            );
+        } catch (DBALException $e) {
+            throw new \RuntimeException(sprintf(
+                'Failed to update node "%s": %s',
+                $nodeAggregateId->value,
+                $e->getMessage()
+            ), 1599646777, $e);
+        }
+    }
+
+    /**
+     * @param array<string,mixed> $parameters
+     */
+    private function updateNodeQuery(string $query, array $parameters): void
+    {
+        try {
+            $this->dbal->executeQuery(
+                'UPDATE ' . $this->tableNamePrefix . '_uri ' . $query,
+                $parameters,
+                self::COLUMN_TYPES_DOCUMENT_URIS
+            );
+        } catch (DBALException $e) {
+            throw new \RuntimeException(sprintf(
+                'Failed to update node via custom query: %s',
+                $e->getMessage()
+            ), 1599659170, $e);
+        }
+    }
+
+    private function deleteNodeByIdAndDimensionSpacePointHash(
+        NodeAggregateId $nodeAggregateId,
+        string $dimensionSpacePointHash
+    ): void {
+        try {
+            $this->dbal->delete(
+                $this->tableNamePrefix . '_uri',
+                [
+                    'nodeAggregateId' => $nodeAggregateId->value,
+                    'dimensionSpacePointHash' => $dimensionSpacePointHash,
+                ],
+                self::COLUMN_TYPES_DOCUMENT_URIS
+            );
+        } catch (DBALException $e) {
+            throw new \RuntimeException(sprintf(
+                'Failed to delete node "%s": %s',
+                $nodeAggregateId->value,
+                $e->getMessage()
+            ), 1599655284, $e);
+        }
+    }
+
+    /**
+     * @param array<string,mixed> $parameters
+     */
+    private function deleteNodeQuery(string $query, array $parameters): void
+    {
+        try {
+            $this->dbal->executeQuery(
+                'DELETE FROM ' . $this->tableNamePrefix . '_uri ' . $query,
+                $parameters,
+                self::COLUMN_TYPES_DOCUMENT_URIS
+            );
+        } catch (DBALException $e) {
+            throw new \RuntimeException(sprintf(
+                'Failed to delete node via custom query: %s',
+                $e->getMessage()
+            ), 1599659226, $e);
+        }
+    }
+
+    private function disconnectNodeFromSiblings(DocumentNodeInfo $node): void
+    {
+        if ($node->hasPrecedingNodeAggregateId()) {
+            $this->updateNodeByIdAndDimensionSpacePointHash(
+                $node->getPrecedingNodeAggregateId(),
+                $node->getDimensionSpacePointHash(),
+                [
+                    'succeedingNodeAggregateId' =>
+                    $node->hasSucceedingNodeAggregateId() ? $node->getSucceedingNodeAggregateId()->value : null
+                ]
+            );
+        }
+        if ($node->hasSucceedingNodeAggregateId()) {
+            $this->updateNodeByIdAndDimensionSpacePointHash(
+                $node->getSucceedingNodeAggregateId(),
+                $node->getDimensionSpacePointHash(),
+                [
+                    'precedingNodeAggregateId' =>
+                    $node->hasPrecedingNodeAggregateId() ? $node->getPrecedingNodeAggregateId()->value : null
+                ]
+            );
+        }
+    }
+
+    private function connectNodeWithSiblings(
+        DocumentNodeInfo $node,
+        NodeAggregateId $parentNodeAggregateId,
+        ?NodeAggregateId $newSucceedingNodeAggregateId,
+    ): void {
+        if ($newSucceedingNodeAggregateId !== null) {
+            $newPrecedingNode = $this->tryGetNode(fn() => $this->documentUriPathFinder->getPrecedingNode(
+                $newSucceedingNodeAggregateId,
+                $parentNodeAggregateId,
+                $node->getDimensionSpacePointHash()
+            ));
+
+            // update new succeeding node
+            $this->updateNodeByIdAndDimensionSpacePointHash(
+                $newSucceedingNodeAggregateId,
+                $node->getDimensionSpacePointHash(),
+                ['precedingNodeAggregateId' => $node->getNodeAggregateId()->value]
+            );
+        } else {
+            $newPrecedingNode = $this->tryGetNode(fn() => $this->documentUriPathFinder->getLastChildNodeNotBeing(
+                $parentNodeAggregateId,
+                $node->getDimensionSpacePointHash(),
+                $node->getNodeAggregateId()
+            ));
+        }
+        if (
+            $newPrecedingNode !== null
+            && !$newPrecedingNode->getNodeAggregateId()->equals($node->getNodeAggregateId())
+        ) {
+            $this->updateNode(
+                $newPrecedingNode,
+                ['succeedingNodeAggregateId' => $node->getNodeAggregateId()->value]
+            );
+        }
+
+        $updatedNodeData = [
+            'parentNodeAggregateId' => $parentNodeAggregateId->value,
+            'succeedingNodeAggregateId' => $newSucceedingNodeAggregateId?->value,
+        ];
+        if (
+            !$newPrecedingNode?->getNodeAggregateId()->equals($node->getNodeAggregateId())
+        ) {
+            $updatedNodeData['precedingNodeAggregateId'] = $newPrecedingNode?->getNodeAggregateId()->value;
+        }
+
+        // update node itself
+        $this->updateNode($node, $updatedNodeData);
+    }
+
+    private function whenDimensionSpacePointWasMoved(DimensionSpacePointWasMoved $event): void
+    {
+        if ($event->workspaceName->isLive()) {
+            $this->updateNodeQuery(
+                'SET dimensionspacepointhash = :newDimensionSpacePointHash
+                        WHERE dimensionspacepointhash = :originalDimensionSpacePointHash',
+                [
+                    'originalDimensionSpacePointHash' => $event->source->hash,
+                    'newDimensionSpacePointHash' => $event->target->hash,
+                ]
+            );
+
+            $this->updateNodeQuery(
+                'SET origindimensionspacepointhash = :newDimensionSpacePointHash
+                        WHERE origindimensionspacepointhash = :originalDimensionSpacePointHash',
+                [
+                    'originalDimensionSpacePointHash' => $event->source->hash,
+                    'newDimensionSpacePointHash' => $event->target->hash,
+                ]
+            );
+        }
+    }
+
+    private function whenDimensionShineThroughWasAdded(DimensionShineThroughWasAdded $event): void
+    {
+        if ($event->workspaceName->isLive()) {
+            try {
+                $this->dbal->executeStatement('INSERT INTO ' . $this->tableNamePrefix . '_uri (
+                    nodeaggregateid,
+                    uripath,
+                    nodeaggregateidpath,
+                    sitenodename,
+                    disabled,
+                    removed,
+                    dimensionspacepointhash,
+                    origindimensionspacepointhash,
+                    parentnodeaggregateid,
+                    precedingnodeaggregateid,
+                    succeedingnodeaggregateid,
+                    shortcuttarget,
+                    nodetypename,
+                    isplaceholder
+                )
+                SELECT
+                    nodeaggregateid,
+                    uripath,
+                    nodeaggregateidpath,
+                    sitenodename,
+                    disabled,
+                    removed,
+                    :newDimensionSpacePointHash AS dimensionspacepointhash,
+                    origindimensionspacepointhash,
+                    parentnodeaggregateid,
+                    precedingnodeaggregateid,
+                    succeedingnodeaggregateid,
+                    shortcuttarget,
+                    nodetypename,
+                    isplaceholder
+                FROM
+                    ' . $this->tableNamePrefix . '_uri
+                WHERE
+                    dimensionSpacePointHash = :sourceDimensionSpacePointHash
+                ', [
+                    'sourceDimensionSpacePointHash' => $event->source->hash,
+                    'newDimensionSpacePointHash' => $event->target->hash,
+                ]);
+            } catch (DBALException $e) {
+                throw new \RuntimeException(sprintf(
+                    'Failed to insert new dimension shine through: %s',
+                    $e->getMessage()
+                ), 1599646608, $e);
+            }
+        }
+    }
+}
