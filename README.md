@@ -1,4 +1,5 @@
 # Neos Folder NodeType
+
 [![Latest Stable Version](https://poser.pugx.org/breadlesscode/neos-nodetypes-folder/v/stable)](https://packagist.org/packages/breadlesscode/neos-nodetypes-folder)
 [![Downloads](https://img.shields.io/packagist/dt/breadlesscode/neos-nodetypes-folder.svg)](https://packagist.org/packages/breadlesscode/neos-nodetypes-folder)
 [![License](https://img.shields.io/github/license/breadlesscode/neos-nodetypes-folder.svg)](LICENSE)
@@ -11,9 +12,10 @@ The main idea and code is from [@sebobo](https://gist.github.com/Sebobo) from [t
 
 ## Warning
 
-This package overrides the `FrontendNodeRoutePartHandler`.
+This package overrides the `DocumentUriPathProjection` from the neos core!
 
 ## Installation
+
 Most of the time you have to make small adjustments to a package (e.g. the configuration in Settings.yaml). Because of that, it is important to add the corresponding package to the composer manfest of your theme package. Mostly this is the site package located under `Packages/Sites/`. To install it correctly, go to your theme package (e.g. `Packages/Sites/Foo.Bar`) and run the following command:
 
 ```bash
