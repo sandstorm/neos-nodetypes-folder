@@ -1,2 +1,0 @@
-Neos\Neos\Routing\FrontendNodeRoutePartHandlerInterface:
-  className: Breadlesscode\NodeTypes\Folder\Package\FrontendNodeRoutePartHandler

@@ -3,8 +3,14 @@ Neos:
     userInterface:
       translation:
         autoInclude:
-          'Breadlesscode.NodeTypes.Folder':
-            - 'NodeTypes/*/*'
+          "Breadlesscode.NodeTypes.Folder":
+            - "NodeTypes/*/*"
     fusion:
       autoInclude:
         Breadlesscode.NodeTypes.Folder: true
+  ContentRepositoryRegistry:
+    presets:
+      "default":
+        projections:
+          "Neos.Neos:DocumentUriPathProjection":
+            factoryObjectName: Breadlesscode\NodeTypes\Folder\FrontendRouting\Projection\DocumentUriPathProjectionFactory
