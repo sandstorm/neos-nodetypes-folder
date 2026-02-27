@@ -1,11 +1,10 @@
-'Breadlesscode.NodeTypes.Folder:Document.Folder':
+"Sandstorm.NodeTypes.Folder:Document.Folder":
   superTypes:
-    'Neos.Neos:Document': true
-    'Breadlesscode.NodeTypes.Folder:Mixin.HideUriSegment': true
+    "Neos.Neos:Document": true
+    "Sandstorm.NodeTypes.Folder:Mixin.HideUriSegment": true
   ui:
-    label: 'i18n'
-    icon: 'folder'
+    label: "i18n"
+    icon: "folder"
   properties:
     _hiddenInIndex:
       defaultValue: true
-

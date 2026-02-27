@@ -3,14 +3,14 @@ Neos:
     userInterface:
       translation:
         autoInclude:
-          "Breadlesscode.NodeTypes.Folder":
+          "Sandstorm.NodeTypes.Folder":
             - "NodeTypes/*/*"
     fusion:
       autoInclude:
-        Breadlesscode.NodeTypes.Folder: true
+        Sandstorm.NodeTypes.Folder: true
   ContentRepositoryRegistry:
     presets:
       "default":
         projections:
           "Neos.Neos:DocumentUriPathProjection":
-            factoryObjectName: Breadlesscode\NodeTypes\Folder\FrontendRouting\Projection\DocumentUriPathProjectionFactory
+            factoryObjectName: Sandstorm\NodeTypes\Folder\FrontendRouting\Projection\DocumentUriPathProjectionFactory

@@ -1,19 +1,19 @@
 {
     "description": "Folder nodetype for Neos CMS",
     "type": "neos-plugin",
-    "name": "breadlesscode/neos-nodetypes-folder",
+    "name": "sandstorm/neos-nodetypes-folder",
     "license": "MIT",
     "require": {
         "neos/neos": "^9"
     },
     "autoload": {
         "psr-4": {
-            "Breadlesscode\\NodeTypes\\Folder\\": "Classes/"
+            "Sandstorm\\NodeTypes\\Folder\\": "Classes/"
         }
     },
     "extra": {
         "neos": {
-            "package-key": "Breadlesscode.NodeTypes.Folder"
+            "package-key": "Sandstorm.NodeTypes.Folder"
         },
         "applied-flow-migrations": [
             "TYPO3.FLOW3-201201261636",
