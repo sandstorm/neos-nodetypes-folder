@@ -2,7 +2,7 @@
 
 declare(strict_types=1);
 
-namespace Breadlesscode\NodeTypes\Folder\FrontendRouting\Projection;
+namespace Sandstorm\NodeTypes\Folder\FrontendRouting\Projection;
 
 use Doctrine\DBAL\Connection;
 use Neos\ContentRepository\Core\Factory\SubscriberFactoryDependencies;

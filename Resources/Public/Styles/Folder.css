@@ -1,4 +1,4 @@
-#breadlesscode-node-types-folder {
+#sandstorm-node-types-folder {
     position: fixed;
     top: 0;
     left: 0;
@@ -16,7 +16,7 @@
     -webkit-font-smoothing: antialiased;
 }
 
-#breadlesscode-node-types-folder > div.bntf-inner {
+#sandstorm-node-types-folder > div.bntf-inner {
     position: relative;
     width: 260px;
     height: 252px;
@@ -25,12 +25,12 @@
     text-align: center;
 }
 
-#breadlesscode-node-types-folder > div.bntf-inner > div.bntf-icon > i {
+#sandstorm-node-types-folder > div.bntf-inner > div.bntf-icon > i {
     color: #323232;
     font-size: 14em;
 }
 
-#breadlesscode-node-types-folder > div.bntf-inner > div.bntf-title {
+#sandstorm-node-types-folder > div.bntf-inner > div.bntf-title {
     color: #323232;
     font-size: 1.5em;
     line-height: 1.4;

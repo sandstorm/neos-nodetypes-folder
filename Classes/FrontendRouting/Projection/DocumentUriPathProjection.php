@@ -2,7 +2,7 @@
 
 declare(strict_types=1);
 
-namespace Breadlesscode\NodeTypes\Folder\FrontendRouting\Projection;
+namespace Sandstorm\NodeTypes\Folder\FrontendRouting\Projection;
 
 use Doctrine\Common\Collections\Expr\Value;
 use Doctrine\DBAL\Connection;
@@ -312,7 +312,7 @@ final class DocumentUriPathProjection implements ProjectionInterface
         while (!$parentNodeForUriCreation->isRoot()) {
             $nodeType = $this->nodeTypeManager->getNodeType($parentNodeForUriCreation->getNodeTypeName());
 
-            if ($nodeType !== null && !$nodeType->isOfType('Breadlesscode.NodeTypes.Folder:Document.Folder')) {
+            if ($nodeType !== null && !$nodeType->isOfType('Sandstorm.NodeTypes.Folder:Document.Folder')) {
                 $basename = basename($parentNodeForUriCreation->getUriPath());
                 if (!empty($basename)) {
                     $uriPath =  $basename . '/' . $uriPath;
@@ -345,7 +345,7 @@ final class DocumentUriPathProjection implements ProjectionInterface
         while (!$currentNode->isRoot()) {
             $nodeType = $this->nodeTypeManager->getNodeType($currentNode->getNodeTypeName());
 
-            if ($nodeType !== null && !$nodeType->isOfType('Breadlesscode.NodeTypes.Folder:Document.Folder')) {
+            if ($nodeType !== null && !$nodeType->isOfType('Sandstorm.NodeTypes.Folder:Document.Folder')) {
                 $basename = basename($currentNode->getUriPath());
                 if (!empty($basename)) {
                     array_unshift($pathSegments, $basename);
@@ -473,7 +473,7 @@ final class DocumentUriPathProjection implements ProjectionInterface
             if ($parentNode !== null) {
                 // Check if this is a folder node - use folder-aware URI generation
                 $nodeType = $this->nodeTypeManager->getNodeType($sourceNode->getNodeTypeName());
-                if ($nodeType !== null && $nodeType->isOfType('Breadlesscode.NodeTypes.Folder:Document.Folder')) {
+                if ($nodeType !== null && $nodeType->isOfType('Sandstorm.NodeTypes.Folder:Document.Folder')) {
                     // For folder nodes, use the parent's URI path directly (folders don't contribute to URIs)
                     $uriPath = $parentNode->getUriPath();
                 } else {
@@ -627,7 +627,7 @@ final class DocumentUriPathProjection implements ProjectionInterface
 
             // Check if this is a folder node - folders don't appear in URIs, so skip URI updates
             $nodeType = $this->nodeTypeManager->getNodeType($node->getNodeTypeName());
-            if ($nodeType !== null && $nodeType->isOfType('Breadlesscode.NodeTypes.Folder:Document.Folder')) {
+            if ($nodeType !== null && $nodeType->isOfType('Sandstorm.NodeTypes.Folder:Document.Folder')) {
                 continue;
             }
 
