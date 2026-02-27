@@ -2,7 +2,7 @@
 
 [![Latest Stable Version](https://poser.pugx.org/sandstorm/neos-nodetypes-folder/v/stable)](https://packagist.org/packages/sandstorm/neos-nodetypes-folder)
 
-> [!INFO]
+> [!NOTE]
 > This was originally a fork of [breadlesscode/neos-nodetypes-folder](https://github.com/breadlesscode/neos-nodetypes-folder).
 > The original author and us decided to split maintenance of the package.
 > While we maintain the package for all Neos versions >= 9, you can still use the original package for
