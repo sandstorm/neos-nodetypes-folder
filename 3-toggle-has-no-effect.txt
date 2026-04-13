@@ -1,0 +1,1041 @@
+╭─── Claude Code v2.1.79 ──────────────────────────────────────────────────────╮
+│                                          │ Tips for getting started          │
+│           Welcome back Michael!          │ Run /init to create a CLAUDE.md … │
+│                                          │ ───────────────────────────────── │
+│                  ▐▛███▜▌                 │ Recent activity                   │
+│                 ▝▜█████▛▘                │ No recent activity                │
+│                   ▘▘ ▝▝                  │                                   │
+│                                          │                                   │
+│   Sonnet 4.6 · Claude Team · Sandstorm   │                                   │
+│     ~/Src/holypoly-website-relaunch      │                                   │
+╰──────────────────────────────────────────────────────────────────────────────╯
+
+╭──────────────────────────────────────────────────────────────────────────────╮
+│ Plan to implement                                                            │
+│                                                                              │
+│ Fix: hideSegmentInUriPath Toggle Has No Effect on Stored URI Paths           │
+│                                                                              │
+│ Context                                                                      │
+│                                                                              │
+│ Sandstorm.NodeTypes.Folder makes folder nodes "transparent" in URLs via a    │
+│ hideSegmentInUriPath boolean property (default true). When this property is  │
+│ changed to false (show segment), the projection is never updated — not even  │
+│ after a full replay. The bug also affects uriPathSegment changes on          │
+│ transparent folder nodes (currently silently ignored).                       │
+│                                                                              │
+│ Root cause — three interlinked problems in DocumentUriPathProjection.php:    │
+│                                                                              │
+│ 1. whenNodePropertiesWereSet() ignores hideSegmentInUriPath (lines 578–585   │
+│ early-return). The handler watches only uriPathSegment, targetMode, and      │
+│ target. Changes to hideSegmentInUriPath are silently dropped.                │
+│ 2. generateUriPath() (line 315) and generateParentUriPath() (line 348)       │
+│ always skip folder-type nodes regardless of the hideSegmentInUriPath value.  │
+│ They check isOfType('…:Document.Folder') unconditionally, so making a folder │
+│  opaque has no effect on how child paths are built.                          │
+│ 3. uriPathSegment changes on folder nodes are skipped (lines 619–622): even  │
+│ if the user renames a folder, the folder's own uriPath is never updated.     │
+│ (For transparent folders, children are unaffected — but the folder row       │
+│ itself is wrong.)                                                            │
+│                                                                              │
+│ How the projection stores folder paths:                                      │
+│ Transparent folder: uriPath = "my-folder" (stores its own segment, but       │
+│ generateUriPath() skips it for children → children get "child" not           │
+│ "my-folder/child").                                                          │
+│ This means toggling hideSegmentInUriPath must rewrite all descendant paths   │
+│ in the DB.                                                                   │
+│                                                                              │
+│ Critical Files                                                               │
+│                                                                              │
+│ - app/Packages/Plugins/Sandstorm.NodeTypes.Folder/Classes/FrontendRouting/Pr │
+│ ojection/DocumentUriPathProjection.php — main changes                        │
+│ - app/Packages/Application/Neos.Neos/Classes/FrontendRouting/Projection/Docu │
+│ mentUriPathSchemaBuilder.php — add column                                    │
+│ - app/Packages/Application/Neos.Neos/Classes/FrontendRouting/Projection/Docu │
+│ mentNodeInfo.php — add accessor                                              │
+│                                                                              │
+│ Implementation Plan                                                          │
+│                                                                              │
+│ Step 1 — Add hideurisegment column to the DB schema                          │
+│                                                                              │
+│ File: DocumentUriPathSchemaBuilder.php                                       │
+│                                                                              │
+│ Add to createUriTable() after the existing isplaceholder column:             │
+│ (new Column('hideurisegment', Type::getType(Types::INTEGER)))->setLength(4)- │
+│ >setUnsigned(true)->setDefault(0)->setNotnull(true),                         │
+│                                                                              │
+│ DbalSchemaDiff will auto-generate an ALTER TABLE ADD COLUMN on setUp().      │
+│ Value: 1 = transparent folder (hide segment), 0 = everything else.           │
+│                                                                              │
+│ Step 2 — Add accessor to DocumentNodeInfo                                    │
+│                                                                              │
+│ File: DocumentNodeInfo.php                                                   │
+│                                                                              │
+│ Add after getUriPath():                                                      │
+│ public function isHideUriSegment(): bool                                     │
+│ {                                                                            │
+│     return (bool)($this->source['hideurisegment'] ?? false);                 │
+│ }                                                                            │
+│                                                                              │
+│ Step 3 — Store hideurisegment on node creation                               │
+│                                                                              │
+│ File: DocumentUriPathProjection.php, in                                      │
+│ whenNodeAggregateWithNodeWasCreated(), add to the insertNode([...]) call:    │
+│ 'hideUriSegment' => (int)($nodeType !== null                                 │
+│     && $nodeType->isOfType('Sandstorm.NodeTypes.Folder:Document.Folder')     │
+│     && ($propertyValues['hideSegmentInUriPath'] ?? true) === true),          │
+│ $nodeType must be resolved for the inserted node's type (the event already   │
+│ has $event->nodeTypeName).                                                   │
+│                                                                              │
+│ Step 4 — Update generateUriPath() and generateParentUriPath()                │
+│                                                                              │
+│ Replace the isOfType(folder) check with isHideUriSegment():                  │
+│                                                                              │
+│ generateUriPath() line ~315:                                                 │
+│ // Before:                                                                   │
+│ if ($nodeType !== null &&                                                    │
+│ !$nodeType->isOfType('Sandstorm.NodeTypes.Folder:Document.Folder')) {        │
+│ // After:                                                                    │
+│ if (!$parentNodeForUriCreation->isHideUriSegment()) {                        │
+│ (Remove the $nodeType lookup entirely from this loop — no longer needed.)    │
+│                                                                              │
+│ generateParentUriPath() line ~348: Same change.                              │
+│                                                                              │
+│ Step 5 — Handle hideSegmentInUriPath and folder uriPathSegment changes       │
+│                                                                              │
+│ File: DocumentUriPathProjection.php, whenNodePropertiesWereSet()             │
+│                                                                              │
+│ 5a. Expand early-return guard (lines 578–585) to also check for              │
+│ hideSegmentInUriPath:                                                        │
+│ if (                                                                         │
+│     !isset($newPropertyValues['uriPathSegment'])                             │
+│     && !in_array('uriPathSegment', $unsetPropertyNames)                      │
+│     && !isset($newPropertyValues['targetMode'])                              │
+│     && !isset($newPropertyValues['target'])                                  │
+│     && !isset($newPropertyValues['hideSegmentInUriPath'])                    │
+│ ) {                                                                          │
+│     return;                                                                  │
+│ }                                                                            │
+│                                                                              │
+│ 5b. Handle hideSegmentInUriPath change — add inside the foreach              │
+│ ($event->affectedDimensionSpacePoints ...) loop, before the existing         │
+│ uriPathSegment handling:                                                     │
+│                                                                              │
+│ if (isset($newPropertyValues['hideSegmentInUriPath'])) {                     │
+│     $newHide = (bool)$newPropertyValues['hideSegmentInUriPath'];             │
+│     if ($node->isHideUriSegment() !== $newHide) {                            │
+│         // Update the flag on the folder itself                              │
+│         $this->updateNodeByIdAndDimensionSpacePointHash(                     │
+│             $event->nodeAggregateId,                                         │
+│             $affectedDimensionSpacePoint->hash,                              │
+│             ['hideUriSegment' => (int)$newHide]                              │
+│         );                                                                   │
+│                                                                              │
+│         $folderUriPath = $node->getUriPath();          // e.g.               │
+│ "parent/my-folder"                                                           │
+│         $folderSegment = basename($folderUriPath);       // e.g. "my-folder" │
+│         $parentNode = $this->tryGetNode(fn() =>                              │
+│ $this->documentUriPathFinder->getByIdAndDimensionSpacePointHash(             │
+│             $node->getParentNodeAggregateId(),                               │
+│             $affectedDimensionSpacePoint->hash                               │
+│         ));                                                                  │
+│         $parentUriPath = $parentNode?->getUriPath() ?? '';                   │
+│                                                                              │
+│         if ($newHide === false) {                                            │
+│             // transparent → opaque: insert folder segment into all          │
+│ descendants' paths                                                           │
+│             // Before: "parent/child"   After: "parent/my-folder/child"      │
+│             // Before: "child"          After: "my-folder/child"  (when      │
+│ parentUriPath = '')                                                          │
+│             $this->updateNodeQuery(                                          │
+│                 'SET uriPath = CONCAT(:folderUriPath, \'/\',                 │
+│ SUBSTRING(uriPath, IF(:parentUriPath = \'\', 1, LENGTH(:parentUriPath) +     │
+│ 2)))                                                                         │
+│                  WHERE dimensionSpacePointHash = :dimensionSpacePointHash    │
+│                    AND nodeAggregateId != :nodeAggregateId                   │
+│                    AND nodeAggregateIdPath LIKE                              │
+│ :childNodeAggregateIdPathPrefix',                                            │
+│                 [                                                            │
+│                     'folderUriPath' => $folderUriPath,                       │
+│                     'parentUriPath' => $parentUriPath,                       │
+│                     'dimensionSpacePointHash' =>                             │
+│ $affectedDimensionSpacePoint->hash,                                          │
+│                     'nodeAggregateId' => $node->getNodeAggregateId()->value, │
+│                     'childNodeAggregateIdPathPrefix' =>                      │
+│ $node->getNodeAggregateIdPath() . '/%',                                      │
+│                 ]                                                            │
+│             );                                                               │
+│         } else {                                                             │
+│             // opaque → transparent: remove folder segment from all          │
+│ descendants' paths                                                           │
+│             // Before: "parent/my-folder/child"   After: "parent/child"      │
+│             // Before: "my-folder/child"           After: "child"  (when     │
+│ parentUriPath = '')                                                          │
+│             $this->updateNodeQuery(                                          │
+│                 'SET uriPath = CONCAT(IF(:parentUriPath = \'\', \'\',        │
+│ CONCAT(:parentUriPath, \'/\')), SUBSTRING(uriPath, LENGTH(:folderUriPath) +  │
+│ 2))                                                                          │
+│                  WHERE dimensionSpacePointHash = :dimensionSpacePointHash    │
+│                    AND nodeAggregateId != :nodeAggregateId                   │
+│                    AND nodeAggregateIdPath LIKE                              │
+│ :childNodeAggregateIdPathPrefix',                                            │
+│                 [                                                            │
+│                     'folderUriPath' => $folderUriPath,                       │
+│                     'parentUriPath' => $parentUriPath,                       │
+│                     'dimensionSpacePointHash' =>                             │
+│ $affectedDimensionSpacePoint->hash,                                          │
+│                     'nodeAggregateId' => $node->getNodeAggregateId()->value, │
+│                     'childNodeAggregateIdPathPrefix' =>                      │
+│ $node->getNodeAggregateIdPath() . '/%',                                      │
+│                 ]                                                            │
+│             );                                                               │
+│         }                                                                    │
+│     }                                                                        │
+│ }                                                                            │
+│                                                                              │
+│ 5c. Fix uriPathSegment handling for folder nodes — replace lines 618–622     │
+│ (the continue for folder nodes):                                             │
+│                                                                              │
+│ // For transparent folders: only update the folder's own row, do NOT cascade │
+│ // (children don't include the folder's segment, so they're unaffected)      │
+│ // For opaque folders: cascade normally (same as any non-folder page)        │
+│ $nodeType = $this->nodeTypeManager->getNodeType($node->getNodeTypeName());   │
+│ $isTransparentFolder = $nodeType !== null                                    │
+│     && $nodeType->isOfType('Sandstorm.NodeTypes.Folder:Document.Folder')     │
+│     && $node->isHideUriSegment();                                            │
+│                                                                              │
+│ $oldUriPath = $node->getUriPath();                                           │
+│ $uriPathSegments = explode('/', $oldUriPath);                                │
+│ $uriPathSegments[array_key_last($uriPathSegments)] =                         │
+│ ($newPropertyValues['uriPathSegment'] ?? '') ?:                              │
+│ $event->nodeAggregateId->value;                                              │
+│ $newUriPath = implode('/', $uriPathSegments);                                │
+│                                                                              │
+│ if ($isTransparentFolder) {                                                  │
+│     // Only update the folder row itself                                     │
+│     $this->updateNodeByIdAndDimensionSpacePointHash(                         │
+│         $event->nodeAggregateId,                                             │
+│         $affectedDimensionSpacePoint->hash,                                  │
+│         ['uriPath' => $newUriPath]                                           │
+│     );                                                                       │
+│ } else {                                                                     │
+│     // Non-folder or opaque folder: cascade to all descendants               │
+│     $this->updateNodeQuery(                                                  │
+│         'SET uriPath = CONCAT(:newUriPath, SUBSTRING(uriPath,                │
+│ LENGTH(:oldUriPath) + 1))                                                    │
+│         WHERE dimensionSpacePointHash = :dimensionSpacePointHash             │
+│             AND (                                                            │
+│                 nodeAggregateId = :nodeAggregateId                           │
+│                 OR nodeAggregateIdPath LIKE :childNodeAggregateIdPathPrefix  │
+│             )',                                                              │
+│         [                                                                    │
+│             'newUriPath' => $newUriPath,                                     │
+│             'oldUriPath' => $oldUriPath,                                     │
+│             'dimensionSpacePointHash' => $affectedDimensionSpacePoint->hash, │
+│             'nodeAggregateId' => $node->getNodeAggregateId()->value,         │
+│             'childNodeAggregateIdPathPrefix' =>                              │
+│ $node->getNodeAggregateIdPath() . '/%',                                      │
+│         ]                                                                    │
+│     );                                                                       │
+│ }                                                                            │
+│                                                                              │
+│ Notes on copyVariants()                                                      │
+│                                                                              │
+│ No additional changes needed. $sourceNode->toArray() returns the raw DB row, │
+│  which will include hideurisegment. Since insertNode($targetNode->toArray()) │
+│  stores the whole array, the flag is automatically copied from source to     │
+│ target dimension.                                                            │
+│                                                                              │
+│ After the Fix                                                                │
+│                                                                              │
+│ Run ./flow subscription:replay Neos.Neos:DocumentUriPathProjection to        │
+│ rebuild the projection with the new column populated.                        │
+│                                                                              │
+│ Verification                                                                 │
+│                                                                              │
+│ 1. Create a Folder node in de, add a child page → /child-page ✓              │
+│ 2. Toggle "hide url path segment" → OFF on the folder →                      │
+│ /my-folder/child-page ✓                                                      │
+│ 3. Toggle it back → ON → /child-page ✓                                       │
+│ 4. Rename the folder's uriPathSegment while transparent → folder row         │
+│ updated, child paths unchanged ✓                                             │
+│ 5. Rename the folder's uriPathSegment while opaque → folder + children all   │
+│ updated ✓                                                                    │
+│ 6. Create a en variant of the folder (with hideSegmentInUriPath = false) →   │
+│ en child resolves to /en/my-folder/child-page ✓                              │
+│ 7. Replay projection → all of the above correct after replay ✓               │
+╰──────────────────────────────────────────────────────────────────────────────╯
+
+⏺ Explore(Read critical files for implementation)
+  ⎿  Done (6 tool uses · 52.4k tokens · 1m 44s)
+  (ctrl+o to expand)
+
+  Read 3 files (ctrl+o to expand)
+
+⏺ Now I have a full picture of the code. Let me implement all 5 steps.
+
+⏺ Update(app/Packages/Application/Neos.Neos/Classes/FrontendRouting/Projection/D
+        ocumentUriPathSchemaBuilder.php)
+  ⎿  Added 1 line
+      55              DbalSchemaFactory::columnForGenericString('shortcut
+          target', $platform)->setLength(1000)->setNotnull(false),
+      56              DbalSchemaFactory::columnForNodeTypeName('nodetypen
+          ame', $platform),
+      57              (new Column('isplaceholder', Type::getType(Types::I
+          NTEGER)))->setLength(4)->setUnsigned(true)->setDefault(0)->setN
+          otnull(true),
+      58 +            (new Column('hideurisegment', Type::getType(Types::
+         +INTEGER)))->setLength(4)->setUnsigned(true)->setDefault(0)->set
+         +Notnull(true),                                                 
+      59          ]);
+      60  
+      61          return $table
+
+⏺ Update(app/Packages/Application/Neos.Neos/Classes/FrontendRouting/Projection/D
+        ocumentNodeInfo.php)
+  ⎿  Added 5 lines
+      144          return $this->source['uripath'];
+      145      }
+      146  
+      147 +    public function isHideUriSegment(): bool                  
+      148 +    {                                                         
+      149 +        return (bool)($this->source['hideurisegment'] ?? false
+          +);                                                            
+      150 +    }                                                         
+      151 +                                                              
+      152      public function hasUriPath(): bool
+      153      {
+      154          return !empty($this->source['uripath']);
+
+⏺ Now for the main projection file — step 3: store hideurisegment on node
+  creation:
+
+⏺ Update(app/Packages/Plugins/Sandstorm.NodeTypes.Folder/Classes/FrontendRouting
+        /Projection/DocumentUriPathProjection.php)
+  ⎿  Added 5 lines, removed 1 line
+      281                  $siteNodeName = $parentNode->getSiteNodeName()
+           ;
+      282              }
+      283  
+      284 +            $insertedNodeType = $this->nodeTypeManager->getNod
+          +eType($event->nodeTypeName);                                  
+      285              $this->insertNode([
+      286                  'nodeAggregateId' => $event->nodeAggregateId->
+           value,
+      287                  'uriPath' => $uriPath,
+     ...
+      296                  'nodeTypeName' => $event->nodeTypeName->value,
+      297                  'disabled' => $parentNode->getDisableLevel(),
+      298                  'removed' => $parentNode->getRemovedLevel(),
+      298 -                'isPlaceholder' => (int)($documentTypeClassifi
+          -cation === DocumentTypeClassification::CLASSIFICATION_UNKNOWN)
+      299 +                'isPlaceholder' => (int)($documentTypeClassifi
+          +cation === DocumentTypeClassification::CLASSIFICATION_UNKNOWN)
+          +,                                                             
+      300 +                'hideUriSegment' => (int)($insertedNodeType !=
+          += null                                                        
+      301 +                    && $insertedNodeType->isOfType('Sandstorm.
+          +NodeTypes.Folder:Document.Folder')                            
+      302 +                    && ($propertyValues['hideSegmentInUriPath'
+          +] ?? true) === true),                                         
+      303              ]);
+      304          }
+      305      }
+
+⏺ Step 4 — update generateUriPath() and generateParentUriPath() to use
+  isHideUriSegment():
+
+⏺ Update(app/Packages/Plugins/Sandstorm.NodeTypes.Folder/Classes/FrontendRouting
+        /Projection/DocumentUriPathProjection.php)
+  ⎿  Added 1 line, removed 3 lines
+      314          $parentNodeForUriCreation = $parentNode;
+      315  
+      316          while (!$parentNodeForUriCreation->isRoot()) {
+      317 -            $nodeType = $this->nodeTypeManager->getNodeType($p
+          -arentNodeForUriCreation->getNodeTypeName());                  
+      318 -                                                              
+      319 -            if ($nodeType !== null && !$nodeType->isOfType('Sa
+          -ndstorm.NodeTypes.Folder:Document.Folder')) {                 
+      317 +            if (!$parentNodeForUriCreation->isHideUriSegment()
+          +) {                                                           
+      318                  $basename = basename($parentNodeForUriCreation
+           ->getUriPath());
+      319                  if (!empty($basename)) {
+      320                      $uriPath =  $basename . '/' . $uriPath;
+
+⏺ Update(app/Packages/Plugins/Sandstorm.NodeTypes.Folder/Classes/FrontendRouting
+        /Projection/DocumentUriPathProjection.php)
+  ⎿  Added 1 line, removed 3 lines
+      345  
+      346          $currentNode = $parentNode;
+      347          while (!$currentNode->isRoot()) {
+      348 -            $nodeType = $this->nodeTypeManager->getNodeType($c
+          -urrentNode->getNodeTypeName());                               
+      349 -                                                              
+      350 -            if ($nodeType !== null && !$nodeType->isOfType('Sa
+          -ndstorm.NodeTypes.Folder:Document.Folder')) {                 
+      348 +            if (!$currentNode->isHideUriSegment()) {          
+      349                  $basename = basename($currentNode->getUriPath(
+           ));
+      350                  if (!empty($basename)) {
+      351                      array_unshift($pathSegments, $basename);
+
+⏺ Step 5a — expand the early-return guard in whenNodePropertiesWereSet():
+
+⏺ Update(app/Packages/Plugins/Sandstorm.NodeTypes.Folder/Classes/FrontendRouting
+        /Projection/DocumentUriPathProjection.php)
+  ⎿  Added 1 line
+      580              && !in_array('uriPathSegment', $unsetPropertyNames
+           )
+      581              && !isset($newPropertyValues['targetMode'])
+      582              && !isset($newPropertyValues['target'])
+      583 +            && !isset($newPropertyValues['hideSegmentInUriPath
+          +'])                                                           
+      584          ) {
+      585              return;
+      586          }
+
+⏺ Steps 5b and 5c — handle hideSegmentInUriPath changes and fix folder
+  uriPathSegment changes. I need to replace the block starting from the shortcut
+   check through the end of the foreach body:
+
+⏺ Update(app/Packages/Plugins/Sandstorm.NodeTypes.Folder/Classes/FrontendRouting
+        /Projection/DocumentUriPathProjection.php)
+  ⎿  Added 79 lines, removed 19 lines
+      612                  );
+      613              }
+      614  
+      615 +            if (isset($newPropertyValues['hideSegmentInUriPath
+          +'])) {                                                        
+      616 +                $newHide = (bool)$newPropertyValues['hideSegme
+          +ntInUriPath'];                                                
+      617 +                if ($node->isHideUriSegment() !== $newHide) { 
+      618 +                    // Update the flag on the folder itself   
+      619 +                    $this->updateNodeByIdAndDimensionSpacePoin
+          +tHash(                                                        
+      620 +                        $event->nodeAggregateId,              
+      621 +                        $affectedDimensionSpacePoint->hash,   
+      622 +                        ['hideUriSegment' => (int)$newHide]   
+      623 +                    );                                        
+      624 +                                                              
+      625 +                    $folderUriPath = $node->getUriPath();     
+      626 +                    $parentNode = $this->tryGetNode(fn() => $t
+          +his->documentUriPathFinder->getByIdAndDimensionSpacePointHash(
+      627 +                        $node->getParentNodeAggregateId(),    
+      628 +                        $affectedDimensionSpacePoint->hash    
+      629 +                    ));                                       
+      630 +                    $parentUriPath = $parentNode?->getUriPath(
+          +) ?? '';                                                      
+      631 +                                                              
+      632 +                    if ($newHide === false) {                 
+      633 +                        // transparent → opaque: insert folder
+          + segment into all descendants' paths                          
+      634 +                        $this->updateNodeQuery(               
+      635 +                            'SET uriPath = CONCAT(:folderUriPa
+          +th, \'/\', SUBSTRING(uriPath, IF(:parentUriPath = \'\', 1, LEN
+          +GTH(:parentUriPath) + 2)))                                    
+      636 +                             WHERE dimensionSpacePointHash = :
+          +dimensionSpacePointHash                                       
+      637 +                               AND nodeAggregateId != :nodeAgg
+          +regateId                                                      
+      638 +                               AND nodeAggregateIdPath LIKE :c
+          +hildNodeAggregateIdPathPrefix',                               
+      639 +                            [                                 
+      640 +                                'folderUriPath' => $folderUriP
+          +ath,                                                          
+      641 +                                'parentUriPath' => $parentUriP
+          +ath,                                                          
+      642 +                                'dimensionSpacePointHash' => $
+          +affectedDimensionSpacePoint->hash,                            
+      643 +                                'nodeAggregateId' => $node->ge
+          +tNodeAggregateId()->value,                                    
+      644 +                                'childNodeAggregateIdPathPrefi
+          +x' => $node->getNodeAggregateIdPath() . '/%',                 
+      645 +                            ]                                 
+      646 +                        );                                    
+      647 +                    } else {                                  
+      648 +                        // opaque → transparent: remove folder
+          + segment from all descendants' paths                          
+      649 +                        $this->updateNodeQuery(               
+      650 +                            'SET uriPath = CONCAT(IF(:parentUr
+          +iPath = \'\', \'\', CONCAT(:parentUriPath, \'/\')), SUBSTRING(
+          +uriPath, LENGTH(:folderUriPath) + 2))                         
+      651 +                             WHERE dimensionSpacePointHash = :
+          +dimensionSpacePointHash                                       
+      652 +                               AND nodeAggregateId != :nodeAgg
+          +regateId                                                      
+      653 +                               AND nodeAggregateIdPath LIKE :c
+          +hildNodeAggregateIdPathPrefix',                               
+      654 +                            [                                 
+      655 +                                'folderUriPath' => $folderUriP
+          +ath,                                                          
+      656 +                                'parentUriPath' => $parentUriP
+          +ath,                                                          
+      657 +                                'dimensionSpacePointHash' => $
+          +affectedDimensionSpacePoint->hash,                            
+      658 +                                'nodeAggregateId' => $node->ge
+          +tNodeAggregateId()->value,                                    
+      659 +                                'childNodeAggregateIdPathPrefi
+          +x' => $node->getNodeAggregateIdPath() . '/%',                 
+      660 +                            ]                                 
+      661 +                        );                                    
+      662 +                    }                                         
+      663 +                }                                             
+      664 +            }                                                 
+      665 +                                                              
+      666              if (!isset($newPropertyValues['uriPathSegment']) &
+           & !in_array('uriPathSegment', $unsetPropertyNames)) {
+      667                  continue;
+      668              }
+      669  
+      619 -            // Check if this is a folder node - folders don't 
+          -appear in URIs, so skip URI updates                           
+      670              $nodeType = $this->nodeTypeManager->getNodeType($n
+           ode->getNodeTypeName());
+      621 -            if ($nodeType !== null && $nodeType->isOfType('San
+          -dstorm.NodeTypes.Folder:Document.Folder')) {                  
+      622 -                continue;                                     
+      623 -            }                                                 
+      671 +            $isTransparentFolder = $nodeType !== null         
+      672 +                && $nodeType->isOfType('Sandstorm.NodeTypes.Fo
+          +lder:Document.Folder')                                        
+      673 +                && $node->isHideUriSegment();                 
+      674  
+      675              $oldUriPath = $node->getUriPath();
+      676              $uriPathSegments = explode('/', $oldUriPath);
+      677              $uriPathSegments[array_key_last($uriPathSegments)]
+            = ($newPropertyValues['uriPathSegment'] ?? '') ?: $event->nod
+           eAggregateId->value;
+      678              $newUriPath = implode('/', $uriPathSegments);
+      679  
+      630 -            $this->updateNodeQuery(                           
+      631 -                'SET uriPath = CONCAT(:newUriPath, SUBSTRING(u
+          -riPath, LENGTH(:oldUriPath) + 1))                             
+      632 -                WHERE dimensionSpacePointHash = :dimensionSpac
+          -ePointHash                                                    
+      633 -                    AND (                                     
+      634 -                        nodeAggregateId = :nodeAggregateId    
+      635 -                        OR nodeAggregateIdPath LIKE :childNode
+          -AggregateIdPathPrefix                                         
+      636 -                    )',                                       
+      637 -                [                                             
+      638 -                    'newUriPath' => $newUriPath,              
+      639 -                    'oldUriPath' => $oldUriPath,              
+      640 -                    'dimensionSpacePointHash' => $affectedDime
+          -nsionSpacePoint->hash,                                        
+      641 -                    'nodeAggregateId' => $node->getNodeAggrega
+          -teId()->value,                                                
+      642 -                    'childNodeAggregateIdPathPrefix' => $node-
+          ->getNodeAggregateIdPath() . '/%',                             
+      643 -                ]                                             
+      644 -            );                                                
+      680 +            if ($isTransparentFolder) {                       
+      681 +                // Only update the folder row itself; children
+          + don't include the folder's segment                           
+      682 +                $this->updateNodeByIdAndDimensionSpacePointHas
+          +h(                                                            
+      683 +                    $event->nodeAggregateId,                  
+      684 +                    $affectedDimensionSpacePoint->hash,       
+      685 +                    ['uriPath' => $newUriPath]                
+      686 +                );                                            
+      687 +            } else {                                          
+      688 +                // Non-folder or opaque folder: cascade to all
+          + descendants                                                  
+      689 +                $this->updateNodeQuery(                       
+      690 +                    'SET uriPath = CONCAT(:newUriPath, SUBSTRI
+          +NG(uriPath, LENGTH(:oldUriPath) + 1))                         
+      691 +                    WHERE dimensionSpacePointHash = :dimension
+          +SpacePointHash                                                
+      692 +                        AND (                                 
+      693 +                            nodeAggregateId = :nodeAggregateId
+      694 +                            OR nodeAggregateIdPath LIKE :child
+          +NodeAggregateIdPathPrefix                                     
+      695 +                        )',                                   
+      696 +                    [                                         
+      697 +                        'newUriPath' => $newUriPath,          
+      698 +                        'oldUriPath' => $oldUriPath,          
+      699 +                        'dimensionSpacePointHash' => $affected
+          +DimensionSpacePoint->hash,                                    
+      700 +                        'nodeAggregateId' => $node->getNodeAgg
+          +regateId()->value,                                            
+      701 +                        'childNodeAggregateIdPathPrefix' => $n
+          +ode->getNodeAggregateIdPath() . '/%',                         
+      702 +                    ]                                         
+      703 +                );                                            
+      704 +            }                                                 
+      705          }
+      706      }
+      707  
+
+⏺ Let me verify the final state of the key sections looks correct:
+
+  Read 1 file (ctrl+o to expand)
+
+⏺ Everything looks correct. Here's a summary of all changes made:
+
+  DocumentUriPathSchemaBuilder.php — Added hideurisegment column (integer,
+  unsigned, default 0) after isplaceholder. DbalSchemaDiff will auto-emit the
+  ALTER TABLE ADD COLUMN on setUp().
+
+  DocumentNodeInfo.php — Added isHideUriSegment(): bool accessor that reads from
+   $this->source['hideurisegment'].
+
+  DocumentUriPathProjection.php — Four changes:
+
+  1. Node creation (whenNodeAggregateWithNodeWasCreated): stores hideUriSegment 
+  = 1 when the inserted node is a Folder type with hideSegmentInUriPath true
+  (default).
+  2. generateUriPath() / generateParentUriPath(): replaced isOfType('…Folder')
+  checks with $node->isHideUriSegment() — no more node type manager lookups in
+  these loops.
+  3. Early-return guard (whenNodePropertiesWereSet): added
+  !isset($newPropertyValues['hideSegmentInUriPath']) so the handler no longer
+  silently drops hideSegmentInUriPath changes.
+  4. hideSegmentInUriPath toggle handler: when the flag changes, updates the
+  folder's own hideUriSegment column, then bulk-updates all descendant uriPath
+  values by either inserting or removing the folder's segment.
+  5. uriPathSegment changes on folder nodes: replaced the blanket continue with
+  a split: transparent folders only update their own row; opaque folders cascade
+   to descendants like any other node.
+
+  After deploying, run:
+  ./flow subscription:replay Neos.Neos:DocumentUriPathProjection
+
+✻ Crunched for 3m 38s
+
+❯ you cannot make changes to other packages. Especialy core packages like       
+Neos.Neos/Classes/FrontendRouting. Pls revert that changes and maybe find a     
+solution inside the Folder Package to make it work                              
+
+⏺ Let me first revert the two core package files, then design a solution
+  entirely within the Folder package.
+
+⏺ Update(app/Packages/Application/Neos.Neos/Classes/FrontendRouting/Projection/D
+        ocumentUriPathSchemaBuilder.php)
+  ⎿  Removed 1 line
+      55              DbalSchemaFactory::columnForGenericString('shortcut
+          target', $platform)->setLength(1000)->setNotnull(false),
+      56              DbalSchemaFactory::columnForNodeTypeName('nodetypen
+          ame', $platform),
+      57              (new Column('isplaceholder', Type::getType(Types::I
+          NTEGER)))->setLength(4)->setUnsigned(true)->setDefault(0)->setN
+          otnull(true),
+      58 -            (new Column('hideurisegment', Type::getType(Types::
+         -INTEGER)))->setLength(4)->setUnsigned(true)->setDefault(0)->set
+         -Notnull(true),                                                 
+      58          ]);
+      59  
+      60          return $table
+
+⏺ Update(app/Packages/Application/Neos.Neos/Classes/FrontendRouting/Projection/D
+        ocumentNodeInfo.php)
+  ⎿  Removed 5 lines
+      144          return $this->source['uripath'];
+      145      }
+      146  
+      147 -    public function isHideUriSegment(): bool                  
+      148 -    {                                                         
+      149 -        return (bool)($this->source['hideurisegment'] ?? false
+          -);                                                            
+      150 -    }                                                         
+      151 -                                                              
+      147      public function hasUriPath(): bool
+      148      {
+      149          return !empty($this->source['uripath']);
+
+⏺ Good. Now let me create a schema builder inside the Folder package that wraps
+  the base one and adds the extra column:
+
+⏺ Write(app/Packages/Plugins/Sandstorm.NodeTypes.Folder/Classes/FrontendRouting/
+       Projection/FolderAwareDocumentUriPathSchemaBuilder.php)
+  ⎿  Wrote 48 lines to
+     app/Packages/Plugins/Sandstorm.NodeTypes.Folder/Classes/FrontendRoutin
+     g/Projection/FolderAwareDocumentUriPathSchemaBuilder.php
+       1 <?php
+       2 
+       3 declare(strict_types=1);
+       4 
+       5 namespace Sandstorm\NodeTypes\Folder\FrontendRouting\Projection;
+       6 
+       7 use Doctrine\DBAL\Connection;
+       8 use Doctrine\DBAL\Exception as DBALException;
+       9 use Doctrine\DBAL\Schema\Column;
+      10 use Doctrine\DBAL\Schema\Schema;
+     … +38 lines (ctrl+o to expand)
+
+⏺ Now update the projection to use this new builder and add a private
+  isHideUriSegment() helper instead of the core accessor:
+
+⏺ Update(app/Packages/Plugins/Sandstorm.NodeTypes.Folder/Classes/FrontendRouting
+        /Projection/DocumentUriPathProjection.php)
+  ⎿  Added 1 line, removed 1 line
+       97       */
+       98      private function determineRequiredSqlStatements(): array
+       99      {
+      100 -        $schema = (new DocumentUriPathSchemaBuilder($this->tab
+          -leNamePrefix))->buildSchema($this->dbal);                     
+      100 +        $schema = (new FolderAwareDocumentUriPathSchemaBuilder
+          +($this->tableNamePrefix))->buildSchema($this->dbal);          
+      101          $statements = DbalSchemaDiff::determineRequiredSqlStat
+           ements($this->dbal, $schema);
+      102  
+      103          return $statements;
+
+⏺ Now remove the DocumentUriPathSchemaBuilder import (replaced by the
+  folder-package one) and add the isHideUriSegment() helper. First, check
+  existing imports:
+
+  Read 1 file (ctrl+o to expand)
+
+⏺ Update(app/Packages/Plugins/Sandstorm.NodeTypes.Folder/Classes/FrontendRouting
+        /Projection/DocumentUriPathProjection.php)
+  ⎿  Removed 1 line
+      40  use Neos\Neos\FrontendRouting\Projection\DocumentNodeInfo;
+      41  use Neos\Neos\FrontendRouting\Projection\DocumentTypeClassifica
+          tion;
+      42  use Neos\Neos\FrontendRouting\Projection\DocumentUriPathFinder;
+      43 -use Neos\Neos\FrontendRouting\Projection\DocumentUriPathSchemaB
+         -uilder;                                                        
+      43  
+      44  /**
+      45   * @implements ProjectionInterface<DocumentUriPathFinder>
+
+⏺ Now add the private isHideUriSegment() helper to the projection class. I'll
+  add it near the tryGetNode() helper:
+
+⏺ Update(app/Packages/Plugins/Sandstorm.NodeTypes.Folder/Classes/FrontendRouting
+        /Projection/DocumentUriPathProjection.php)
+  ⎿  Added 9 lines
+      865      }
+      866  
+      867      /**
+      868 +     * Reads the folder-package-specific `hideurisegment` flag
+          + from the raw DB row.                                         
+      869 +     * Using toArray() avoids touching any Neos.Neos core clas
+          +s.                                                            
+      870 +     */                                                       
+      871 +    private function isHideUriSegment(DocumentNodeInfo $node):
+          + bool                                                         
+      872 +    {                                                         
+      873 +        return (bool)($node->toArray()['hideurisegment'] ?? fa
+          +lse);                                                         
+      874 +    }                                                         
+      875 +                                                              
+      876 +    /**                                                       
+      877       * @param array<string,mixed> $data
+      878       */
+      879      private function insertNode(array $data): void
+
+⏺ Now replace every $node->isHideUriSegment() /
+  $parentNodeForUriCreation->isHideUriSegment() /
+  $currentNode->isHideUriSegment() call with the private helper:
+
+  Searched for 1 pattern (ctrl+o to expand)
+
+⏺ Update(app/Packages/Plugins/Sandstorm.NodeTypes.Folder/Classes/FrontendRouting
+        /Projection/DocumentUriPathProjection.php)
+  ⎿  Added 1 line, removed 1 line
+      313          $parentNodeForUriCreation = $parentNode;
+      314  
+      315          while (!$parentNodeForUriCreation->isRoot()) {
+      316 -            if (!$parentNodeForUriCreation->isHideUriSegment()
+          -) {                                                           
+      316 +            if (!$this->isHideUriSegment($parentNodeForUriCrea
+          +tion)) {                                                      
+      317                  $basename = basename($parentNodeForUriCreation
+           ->getUriPath());
+      318                  if (!empty($basename)) {
+      319                      $uriPath =  $basename . '/' . $uriPath;
+
+⏺ Update(app/Packages/Plugins/Sandstorm.NodeTypes.Folder/Classes/FrontendRouting
+        /Projection/DocumentUriPathProjection.php)
+  ⎿  Added 1 line, removed 1 line
+      344  
+      345          $currentNode = $parentNode;
+      346          while (!$currentNode->isRoot()) {
+      347 -            if (!$currentNode->isHideUriSegment()) {          
+      347 +            if (!$this->isHideUriSegment($currentNode)) {     
+      348                  $basename = basename($currentNode->getUriPath(
+           ));
+      349                  if (!empty($basename)) {
+      350                      array_unshift($pathSegments, $basename);
+
+⏺ Update(app/Packages/Plugins/Sandstorm.NodeTypes.Folder/Classes/FrontendRouting
+        /Projection/DocumentUriPathProjection.php)
+  ⎿  Added 1 line, removed 1 line
+      613  
+      614              if (isset($newPropertyValues['hideSegmentInUriPath
+           '])) {
+      615                  $newHide = (bool)$newPropertyValues['hideSegme
+           ntInUriPath'];
+      616 -                if ($node->isHideUriSegment() !== $newHide) { 
+      616 +                if ($this->isHideUriSegment($node) !== $newHid
+          +e) {                                                          
+      617                      // Update the flag on the folder itself
+      618                      $this->updateNodeByIdAndDimensionSpacePoin
+           tHash(
+      619                          $event->nodeAggregateId,
+
+⏺ Update(app/Packages/Plugins/Sandstorm.NodeTypes.Folder/Classes/FrontendRouting
+        /Projection/DocumentUriPathProjection.php)
+  ⎿  Added 1 line, removed 1 line
+      669              $nodeType = $this->nodeTypeManager->getNodeType($n
+           ode->getNodeTypeName());
+      670              $isTransparentFolder = $nodeType !== null
+      671                  && $nodeType->isOfType('Sandstorm.NodeTypes.Fo
+           lder:Document.Folder')
+      672 -                && $node->isHideUriSegment();                 
+      672 +                && $this->isHideUriSegment($node);            
+      673  
+      674              $oldUriPath = $node->getUriPath();
+      675              $uriPathSegments = explode('/', $oldUriPath);
+
+⏺ Let me do a final check to confirm no stray references remain:
+
+  Searched for 2 patterns (ctrl+o to expand)
+
+⏺ Clean. Here's what changed:
+
+  Reverted (core package — untouched again):
+  - Neos.Neos/…/DocumentUriPathSchemaBuilder.php — back to original
+  - Neos.Neos/…/DocumentNodeInfo.php — back to original
+
+  New file (Folder package):
+  - FolderAwareDocumentUriPathSchemaBuilder.php — wraps the core schema builder
+  and adds the hideurisegment column to the table via Doctrine's
+  Table::addColumn(). The hasColumn() guard makes it idempotent.
+
+  Updated (Folder package only):
+  - DocumentUriPathProjection.php:
+    - Swapped DocumentUriPathSchemaBuilder import/usage →
+  FolderAwareDocumentUriPathSchemaBuilder
+    - Added private isHideUriSegment(DocumentNodeInfo $node): bool that reads
+  from $node->toArray()['hideurisegment'] — no core class modification needed
+    - All four ->isHideUriSegment() call sites replaced with
+  $this->isHideUriSegment(…)
+
+✻ Worked for 1m 52s
+
+❯ replay the creation of file FolderAwareDocumentUriPathSchemaBuilder.php. I    
+lost the changes                                                                
+
+⏺ Write(app/Packages/Plugins/Sandstorm.NodeTypes.Folder/Classes/FrontendRouting/
+       Projection/FolderAwareDocumentUriPathSchemaBuilder.php)
+  ⎿  Wrote 46 lines to
+     app/Packages/Plugins/Sandstorm.NodeTypes.Folder/Classes/FrontendRoutin
+     g/Projection/FolderAwareDocumentUriPathSchemaBuilder.php
+       1 <?php
+       2 
+       3 declare(strict_types=1);
+       4 
+       5 namespace Sandstorm\NodeTypes\Folder\FrontendRouting\Projection;
+       6 
+       7 use Doctrine\DBAL\Connection;
+       8 use Doctrine\DBAL\Exception as DBALException;
+       9 use Doctrine\DBAL\Schema\Schema;
+      10 use Doctrine\DBAL\Schema\SchemaException;
+     … +36 lines (ctrl+o to expand)
+
+⏺ Done. File restored at Sandstorm.NodeTypes.Folder/Classes/FrontendRouting/Proj
+  ection/FolderAwareDocumentUriPathSchemaBuilder.php.
+
+❯ pls check if the changes to DocumentUriPathProjection are also up to date. I  
+had to restore them from local history                                          
+
+  Read 1 file (ctrl+o to expand)
+
+⏺ I notice one problem: the early-return guard in whenNodePropertiesWereSet
+  (line 576–583) is missing the hideSegmentInUriPath check — it was part of step
+   5a but got lost in the restore. Let me check and fix it:
+
+  Read 1 file (ctrl+o to expand)
+
+⏺ Confirmed — the hideSegmentInUriPath condition is missing from the
+  early-return guard. Also let me check the isHideUriSegment helper at the
+  bottom:
+
+  Searched for 1 pattern (ctrl+o to expand)
+
+⏺ The helper exists. Now fix the missing early-return condition:
+
+⏺ Update(app/Packages/Plugins/Sandstorm.NodeTypes.Folder/Classes/FrontendRouting
+        /Projection/DocumentUriPathProjection.php)
+  ⎿  Added 1 line
+      578              && !in_array('uriPathSegment', $unsetPropertyNames
+           )
+      579              && !isset($newPropertyValues['targetMode'])
+      580              && !isset($newPropertyValues['target'])
+      581 +            && !isset($newPropertyValues['hideSegmentInUriPath
+          +'])                                                           
+      582          ) {
+      583              return;
+      584          }
+
+⏺ Everything else was intact. Here's a summary of what was checked and what
+  needed fixing:
+
+  ┌────────────────────────────────────────────────────────┬────────────────┐
+  │                        Section                         │     Status     │
+  ├────────────────────────────────────────────────────────┼────────────────┤
+  │ No DocumentUriPathSchemaBuilder import (removed)       │ ✅ correct     │
+  ├────────────────────────────────────────────────────────┼────────────────┤
+  │ FolderAwareDocumentUriPathSchemaBuilder used in        │ ✅ correct     │
+  │ determineRequiredSqlStatements()                       │                │
+  ├────────────────────────────────────────────────────────┼────────────────┤
+  │ hideUriSegment stored on node creation (step 3)        │ ✅ correct     │
+  ├────────────────────────────────────────────────────────┼────────────────┤
+  │ generateUriPath() uses $this->isHideUriSegment() (step │ ✅ correct     │
+  │  4)                                                    │                │
+  ├────────────────────────────────────────────────────────┼────────────────┤
+  │ generateParentUriPath() uses $this->isHideUriSegment() │ ✅ correct     │
+  │  (step 4)                                              │                │
+  ├────────────────────────────────────────────────────────┼────────────────┤
+  │ Early-return guard includes hideSegmentInUriPath (step │ ❌ was missing │
+  │  5a)                                                   │  — now fixed   │
+  ├────────────────────────────────────────────────────────┼────────────────┤
+  │ hideSegmentInUriPath toggle handler (step 5b)          │ ✅ correct     │
+  ├────────────────────────────────────────────────────────┼────────────────┤
+  │ uriPathSegment folder-aware handling (step 5c)         │ ✅ correct     │
+  ├────────────────────────────────────────────────────────┼────────────────┤
+  │ isHideUriSegment() private helper                      │ ✅ correct     │
+  └────────────────────────────────────────────────────────┴────────────────┘
+
+❯ subscription replay now fails with Event 4 in                                 
+"Neos.Neos:DocumentUriPathProjection": Failed to insert node: An exception      
+occurred while executing a query: SQLSTATE[42S22]: Column not found: 1054       
+Unknown column 'hideUriSegment' in 'INSERT INTO. I guess we need a migration?   
+
+⏺ No migration file needed — the projection's setUp() method already handles
+  schema changes via DbalSchemaDiff. You just need to run setup first so the
+  column gets ALTER TABLE'd into the DB before the replay tries to insert into
+  it:
+
+  ./flow subscription:setup
+  ./flow subscription:replay Neos.Neos:DocumentUriPathProjection
+
+  subscription:setup calls setUp() on the projection, which runs
+  FolderAwareDocumentUriPathSchemaBuilder::buildSchema(), detects the missing
+  hideurisegment column via the diff, and executes the ALTER TABLE ... ADD 
+  COLUMN automatically. After that the replay will find the column and succeed.
+
+✻ Cogitated for 36s
+
+❯ ./flow subscription:setup does not exist. ./flow cr:setup does not help       
+either                                                                          
+
+⏺ Explore(Find table prefix and migration setup)
+  ⎿  Done (24 tool uses · 39.8k tokens · 37s)
+  (ctrl+o to expand)
+
+⏺ The table name is dynamic. Let me look at the factory and find what the actual
+   table name ends up being, and check an existing migration for format
+  reference:
+
+  Searched for 4 patterns, read 5 files (ctrl+o to expand)
+
+⏺ The setUp() approach with FolderAwareDocumentUriPathSchemaBuilder is the right
+   long-term solution, but subscription:replay apparently doesn't call setUp()
+  before processing events in your version. A Doctrine migration is needed to
+  add the column to the existing DB. Let me create one:
+
+  Read 1 file (ctrl+o to expand)
+
+⏺ Bash(mkdir -p /Users/michi/Src/holypoly-website-relaunch/app/Packages/Plugins/
+      Sandstorm.NodeTypes.Folder/Migrations/Mysql)
+  ⎿  Done
+
+⏺ Write(app/Packages/Plugins/Sandstorm.NodeTypes.Folder/Migrations/Mysql/Version
+       20260413000000.php)
+  ⎿  Wrote 65 lines to app/Packages/Plugins/Sandstorm.NodeTypes.Folder/Migr
+     ations/Mysql/Version20260413000000.php
+       1 <?php
+       2 
+       3 namespace Neos\Flow\Persistence\Doctrine\Migrations;
+       4 
+       5 use Doctrine\DBAL\Schema\Schema;
+       6 use Doctrine\Migrations\AbstractMigration;
+       7 
+       8 /**
+       9  * Adds the `hideurisegment` column to the DocumentUriPath proje
+         ction table.
+      10  *
+     … +55 lines (ctrl+o to expand)
+
+⏺ Now run the migration, then replay:
+
+  ./flow doctrine:migrate
+  ./flow subscription:replay Neos.Neos:DocumentUriPathProjection
+
+  One caveat: the migration hardcodes cr_default_p_neos_documenturipath_uri —
+  the table name for content repository ID default. If your CR ID is different,
+  adjust the $tableName constant in both up() and down(). You can check the
+  actual table name with:
+
+  ./flow doctrine:dql "SELECT 1" 2>/dev/null; mysql -u... -e "SHOW TABLES LIKE 
+  '%documenturipath%'"
+
+  or just look in your DB directly.
+
+✻ Sautéed for 4m 3s
+
+❯ looks like subscription:replay runs again                                     
+
+⏺ The migration did its job. Once the replay finishes, verify everything is
+  correct by checking a few URLs in the browser or with:
+
+  ./flow subscription:status
+
+❯ the command is ./flow cr:status                                               
+
+⏺ Good to know! I'll remember that.
+
+  Recalled 1 memory, wrote 2 memories (ctrl+o to expand)
+
+⏺ Noted — ./flow cr:status it is.
+
+❯ Ok it seems to work again. But you have to run ./flow subscription:replay for 
+ Neos.Neos:DocumentUriPathProjection every time you toggle the option to hide   
+the uri path segment. Thats not super usefull. Users would expect the changes   
+to be made when they publish the changes. When updating the uri-path-segment in 
+ the neos backend, this changes are visible after publish.                      
+
+  Read 1 file (ctrl+o to expand)
+
+⏺ This is a new problem. Let me explore why the real-time projection update
+  isn't working while replay does.
+
+⏺ Explore(Explore NodeType config and property serialization)
+  ⎿  Done (29 tool uses · 52.6k tokens · 3m 57s)
+  (ctrl+o to expand)
+  ⎿  Interrupted · What should Claude do instead?
+
+❯ ok the hide url path segment toggle works again. But you have to flush the    
+cache to make the changes visible. Could it be a caching problem inside         
+Document.Blog.Tag.fusion for example? Thats one page that renders the post      
+overview.                                                                       
+
+⏺ Explore(Explore Neos cache flushing mechanisms and Blog.Tag fusion)
+  ⎿  Done (53 tool uses · 62.3k tokens · 1m 25s)
+  (ctrl+o to expand)
+
+⏺ Excellent — the root cause is clear. Let me read the RouterCacheHook directly
+  to understand the implementation pattern before writing the plan.
+
+  Read 2 files (ctrl+o to expand)
+
+⏺ Now I need to understand how CatchUpHooks are registered and if there's a
+  factory interface:
+
+⏺ Explore(Find CatchUpHook factory and registration patterns)
+  ⎿  Done (15 tool uses · 36.0k tokens · 1m 57s)
+  (ctrl+o to expand)
+
+⏺ Now I have everything needed. The root cause is crystal clear: the
+  RouterCacheHook only watches uriPathSegment — it's a one-liner guard on line
+  125. The fix is a new CatchUpHook in the Folder package. Let me write the
+  plan:
+
+⏺ Updated plan
+  ⎿  /plan to preview
+
+⏺ Updated plan
+  ⎿  /plan to preview
