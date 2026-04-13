@@ -4,7 +4,6 @@ declare(strict_types=1);
 
 namespace Sandstorm\NodeTypes\Folder\FrontendRouting\Projection;
 
-use Doctrine\Common\Collections\Expr\Value;
 use Doctrine\DBAL\Connection;
 use Doctrine\DBAL\Exception as DBALException;
 use Doctrine\DBAL\Types\Types;
@@ -40,7 +39,6 @@ use Neos\Neos\FrontendRouting\Exception\NodeNotFoundException;
 use Neos\Neos\FrontendRouting\Projection\DocumentNodeInfo;
 use Neos\Neos\FrontendRouting\Projection\DocumentTypeClassification;
 use Neos\Neos\FrontendRouting\Projection\DocumentUriPathFinder;
-use Neos\Neos\FrontendRouting\Projection\DocumentUriPathSchemaBuilder;
 
 /**
  * @implements ProjectionInterface<DocumentUriPathFinder>
@@ -97,7 +95,7 @@ final class DocumentUriPathProjection implements ProjectionInterface
      */
     private function determineRequiredSqlStatements(): array
     {
-        $schema = (new DocumentUriPathSchemaBuilder($this->tableNamePrefix))->buildSchema($this->dbal);
+        $schema = (new FolderAwareDocumentUriPathSchemaBuilder($this->tableNamePrefix))->buildSchema($this->dbal);
         $statements = DbalSchemaDiff::determineRequiredSqlStatements($this->dbal, $schema);
 
         return $statements;
@@ -281,6 +279,7 @@ final class DocumentUriPathProjection implements ProjectionInterface
                 $siteNodeName = $parentNode->getSiteNodeName();
             }
 
+            $insertedNodeType = $this->nodeTypeManager->getNodeType($event->nodeTypeName);
             $this->insertNode([
                 'nodeAggregateId' => $event->nodeAggregateId->value,
                 'uriPath' => $uriPath,
@@ -295,7 +294,10 @@ final class DocumentUriPathProjection implements ProjectionInterface
                 'nodeTypeName' => $event->nodeTypeName->value,
                 'disabled' => $parentNode->getDisableLevel(),
                 'removed' => $parentNode->getRemovedLevel(),
-                'isPlaceholder' => (int)($documentTypeClassification === DocumentTypeClassification::CLASSIFICATION_UNKNOWN)
+                'isPlaceholder' => (int)($documentTypeClassification === DocumentTypeClassification::CLASSIFICATION_UNKNOWN),
+                'hideUriSegment' => (int)($insertedNodeType !== null
+                    && $insertedNodeType->isOfType('Sandstorm.NodeTypes.Folder:Document.Folder')
+                    && ($propertyValues['hideSegmentInUriPath'] ?? true) === true),
             ]);
         }
     }
@@ -310,9 +312,7 @@ final class DocumentUriPathProjection implements ProjectionInterface
         $parentNodeForUriCreation = $parentNode;
 
         while (!$parentNodeForUriCreation->isRoot()) {
-            $nodeType = $this->nodeTypeManager->getNodeType($parentNodeForUriCreation->getNodeTypeName());
-
-            if ($nodeType !== null && !$nodeType->isOfType('Sandstorm.NodeTypes.Folder:Document.Folder')) {
+            if (!$this->isHideUriSegment($parentNodeForUriCreation)) {
                 $basename = basename($parentNodeForUriCreation->getUriPath());
                 if (!empty($basename)) {
                     $uriPath =  $basename . '/' . $uriPath;
@@ -343,9 +343,7 @@ final class DocumentUriPathProjection implements ProjectionInterface
 
         $currentNode = $parentNode;
         while (!$currentNode->isRoot()) {
-            $nodeType = $this->nodeTypeManager->getNodeType($currentNode->getNodeTypeName());
-
-            if ($nodeType !== null && !$nodeType->isOfType('Sandstorm.NodeTypes.Folder:Document.Folder')) {
+            if (!$this->isHideUriSegment($currentNode)) {
                 $basename = basename($currentNode->getUriPath());
                 if (!empty($basename)) {
                     array_unshift($pathSegments, $basename);
@@ -471,20 +469,10 @@ final class DocumentUriPathProjection implements ProjectionInterface
                 $interdimensionalSibling->dimensionSpacePoint->hash
             ));
             if ($parentNode !== null) {
-                // Check if this is a folder node - use folder-aware URI generation
-                $nodeType = $this->nodeTypeManager->getNodeType($sourceNode->getNodeTypeName());
-                if ($nodeType !== null && $nodeType->isOfType('Sandstorm.NodeTypes.Folder:Document.Folder')) {
-                    // For folder nodes, use the parent's URI path directly (folders don't contribute to URIs)
-                    $uriPath = $parentNode->getUriPath();
-                } else {
-                    $uriPathSegments = explode('/', $sourceNode->getUriPath());
-                    $uriPathSegment = $uriPathSegments[array_key_last($uriPathSegments)];
-                    $uriPath = $parentNode->getUriPath() === ''
-                        ? $uriPathSegment
-                        : $parentNode->getUriPath() . '/' . $uriPathSegment;
-
-                    $targetNode = $targetNode->withUriPath($uriPath);
-                }
+                // Use folder-aware URI generation (generateUriPath skips folder ancestors)
+                $uriPathSegment = basename($sourceNode->getUriPath()) ?: $sourceNode->getUriPath();
+                $uriPath = $this->generateUriPath($uriPathSegment, $parentNode, $interdimensionalSibling->dimensionSpacePoint);
+                $targetNode = $targetNode->withUriPath($uriPath);
             }
 
             $this->insertNode($targetNode->toArray());
@@ -590,6 +578,7 @@ final class DocumentUriPathProjection implements ProjectionInterface
             && !in_array('uriPathSegment', $unsetPropertyNames)
             && !isset($newPropertyValues['targetMode'])
             && !isset($newPropertyValues['target'])
+            && !isset($newPropertyValues['hideSegmentInUriPath'])
         ) {
             return;
         }
@@ -621,36 +610,99 @@ final class DocumentUriPathProjection implements ProjectionInterface
                 );
             }
 
+            // When hideSegmentInUriPath is toggled on a Folder, the folder's own URI segment must be
+            // inserted into or removed from the uriPath of every descendant in the DB. Without this,
+            // descendant paths become stale until the next full re-projection.
+            if (isset($newPropertyValues['hideSegmentInUriPath'])) {
+                $newHide = (bool)$newPropertyValues['hideSegmentInUriPath'];
+                if ($this->isHideUriSegment($node) !== $newHide) {
+                    // Update the flag on the folder itself
+                    $this->updateNodeByIdAndDimensionSpacePointHash(
+                        $event->nodeAggregateId,
+                        $affectedDimensionSpacePoint->hash,
+                        ['hideUriSegment' => (int)$newHide]
+                    );
+
+                    $folderUriPath = $node->getUriPath();
+                    $parentNode = $this->tryGetNode(fn() => $this->documentUriPathFinder->getByIdAndDimensionSpacePointHash(
+                        $node->getParentNodeAggregateId(),
+                        $affectedDimensionSpacePoint->hash
+                    ));
+                    $parentUriPath = $parentNode?->getUriPath() ?? '';
+
+                    if ($newHide === false) {
+                        // transparent → opaque: insert folder segment into all descendants' paths
+                        $this->updateNodeQuery(
+                            'SET uriPath = CONCAT(:folderUriPath, \'/\', SUBSTRING(uriPath, IF(:parentUriPath = \'\', 1, LENGTH(:parentUriPath) + 2)))
+                             WHERE dimensionSpacePointHash = :dimensionSpacePointHash
+                               AND nodeAggregateId != :nodeAggregateId
+                               AND nodeAggregateIdPath LIKE :childNodeAggregateIdPathPrefix',
+                            [
+                                'folderUriPath' => $folderUriPath,
+                                'parentUriPath' => $parentUriPath,
+                                'dimensionSpacePointHash' => $affectedDimensionSpacePoint->hash,
+                                'nodeAggregateId' => $node->getNodeAggregateId()->value,
+                                'childNodeAggregateIdPathPrefix' => $node->getNodeAggregateIdPath() . '/%',
+                            ]
+                        );
+                    } else {
+                        // opaque → transparent: remove folder segment from all descendants' paths
+                        $this->updateNodeQuery(
+                            'SET uriPath = CONCAT(IF(:parentUriPath = \'\', \'\', CONCAT(:parentUriPath, \'/\')), SUBSTRING(uriPath, LENGTH(:folderUriPath) + 2))
+                             WHERE dimensionSpacePointHash = :dimensionSpacePointHash
+                               AND nodeAggregateId != :nodeAggregateId
+                               AND nodeAggregateIdPath LIKE :childNodeAggregateIdPathPrefix',
+                            [
+                                'folderUriPath' => $folderUriPath,
+                                'parentUriPath' => $parentUriPath,
+                                'dimensionSpacePointHash' => $affectedDimensionSpacePoint->hash,
+                                'nodeAggregateId' => $node->getNodeAggregateId()->value,
+                                'childNodeAggregateIdPathPrefix' => $node->getNodeAggregateIdPath() . '/%',
+                            ]
+                        );
+                    }
+                }
+            }
+
             if (!isset($newPropertyValues['uriPathSegment']) && !in_array('uriPathSegment', $unsetPropertyNames)) {
                 continue;
             }
 
-            // Check if this is a folder node - folders don't appear in URIs, so skip URI updates
             $nodeType = $this->nodeTypeManager->getNodeType($node->getNodeTypeName());
-            if ($nodeType !== null && $nodeType->isOfType('Sandstorm.NodeTypes.Folder:Document.Folder')) {
-                continue;
-            }
+            $isTransparentFolder = $nodeType !== null
+                && $nodeType->isOfType('Sandstorm.NodeTypes.Folder:Document.Folder')
+                && $this->isHideUriSegment($node);
 
             $oldUriPath = $node->getUriPath();
             $uriPathSegments = explode('/', $oldUriPath);
             $uriPathSegments[array_key_last($uriPathSegments)] = ($newPropertyValues['uriPathSegment'] ?? '') ?: $event->nodeAggregateId->value;
             $newUriPath = implode('/', $uriPathSegments);
 
-            $this->updateNodeQuery(
-                'SET uriPath = CONCAT(:newUriPath, SUBSTRING(uriPath, LENGTH(:oldUriPath) + 1))
-                WHERE dimensionSpacePointHash = :dimensionSpacePointHash
-                    AND (
-                        nodeAggregateId = :nodeAggregateId
-                        OR nodeAggregateIdPath LIKE :childNodeAggregateIdPathPrefix
-                    )',
-                [
-                    'newUriPath' => $newUriPath,
-                    'oldUriPath' => $oldUriPath,
-                    'dimensionSpacePointHash' => $affectedDimensionSpacePoint->hash,
-                    'nodeAggregateId' => $node->getNodeAggregateId()->value,
-                    'childNodeAggregateIdPathPrefix' => $node->getNodeAggregateIdPath() . '/%',
-                ]
-            );
+            if ($isTransparentFolder) {
+                // Only update the folder row itself; children don't include the folder's segment
+                $this->updateNodeByIdAndDimensionSpacePointHash(
+                    $event->nodeAggregateId,
+                    $affectedDimensionSpacePoint->hash,
+                    ['uriPath' => $newUriPath]
+                );
+            } else {
+                // Non-folder or opaque folder: cascade to all descendants
+                $this->updateNodeQuery(
+                    'SET uriPath = CONCAT(:newUriPath, SUBSTRING(uriPath, LENGTH(:oldUriPath) + 1))
+                    WHERE dimensionSpacePointHash = :dimensionSpacePointHash
+                        AND (
+                            nodeAggregateId = :nodeAggregateId
+                            OR nodeAggregateIdPath LIKE :childNodeAggregateIdPathPrefix
+                        )',
+                    [
+                        'newUriPath' => $newUriPath,
+                        'oldUriPath' => $oldUriPath,
+                        'dimensionSpacePointHash' => $affectedDimensionSpacePoint->hash,
+                        'nodeAggregateId' => $node->getNodeAggregateId()->value,
+                        'childNodeAggregateIdPathPrefix' => $node->getNodeAggregateIdPath() . '/%',
+                    ]
+                );
+            }
         }
     }
 
@@ -812,6 +864,15 @@ final class DocumentUriPathProjection implements ProjectionInterface
             /** @noinspection BadExceptionsProcessingInspection */
             return null;
         }
+    }
+
+    /**
+     * Reads the folder-package-specific `hideurisegment` flag from the raw DB row.
+     * Using toArray() avoids touching any Neos.Neos core class.
+     */
+    private function isHideUriSegment(DocumentNodeInfo $node): bool
+    {
+        return (bool)($node->toArray()['hideurisegment'] ?? false);
     }
 
     /**
