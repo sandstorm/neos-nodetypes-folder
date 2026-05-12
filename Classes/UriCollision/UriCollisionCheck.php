@@ -21,6 +21,9 @@ use Sandstorm\NodeTypes\Folder\FrontendRouting\Projection\FolderUriPathLogic;
  * Shared collision check for Defense A (command hook) and Defense B
  * (editor-side endpoint). Queries the same projection rows the router would
  * resolve at runtime, so it surfaces exactly the conflict that would manifest.
+ *
+ * @api shared by {@see UriCollisionCommandHook} (Defense A) and the planned
+ *   Defense B HTTP endpoint, which is why it lives outside both call sites.
  */
 final readonly class UriCollisionCheck
 {
@@ -151,6 +154,101 @@ final readonly class UriCollisionCheck
                     ),
                 );
             }
+        }
+
+        return $collisions;
+    }
+
+    /**
+     * Reject a {@see \Neos\ContentRepository\Core\Feature\NodeMove\Command\MoveNodeAggregate}
+     * when the moved node's prospective uriPath under the new parent would
+     * collide with an existing row in any DSP it currently covers.
+     *
+     * Walks the variation graph's specialization set from the command's
+     * dimensionSpacePoint — that over-covers the scatter strategy, but the
+     * per-DSP `getByIdAndDimensionSpacePointHash` skip prevents false positives.
+     */
+    public function checkMove(
+        ContentRepositoryId $contentRepositoryId,
+        NodeAggregateId $nodeAggregateId,
+        NodeAggregateId $newParentId,
+        DimensionSpacePoint $dimensionSpacePoint,
+    ): CollisionList {
+        $contentRepository = $this->contentRepositoryRegistry->get($contentRepositoryId);
+        $finder = $contentRepository->projectionState(DocumentUriPathFinder::class);
+        $tableNamePrefix = DocumentUriPathProjectionFactory::projectionTableNamePrefix($contentRepositoryId);
+        $folderLogic = new FolderUriPathLogic($finder, $this->dbal, $tableNamePrefix);
+
+        $coveredDsps = $contentRepository->getVariationGraph()->getSpecializationSet($dimensionSpacePoint, true);
+
+        $collisions = CollisionList::empty();
+        foreach ($coveredDsps as $dsp) {
+            try {
+                $current = $finder->getByIdAndDimensionSpacePointHash($nodeAggregateId, $dsp->hash);
+                $newParent = $finder->getByIdAndDimensionSpacePointHash($newParentId, $dsp->hash);
+            } catch (NodeNotFoundException) {
+                continue;
+            }
+            $segment = basename($current->getUriPath());
+            if ($segment === '') {
+                continue;
+            }
+            $candidateUriPath = $folderLogic->buildChildUriPath($segment, $newParent, $dsp);
+            $collisions = $collisions->merge(
+                $this->queryCollisions($tableNamePrefix . '_uri', $dsp->hash, $candidateUriPath, $nodeAggregateId),
+            );
+        }
+
+        return $collisions;
+    }
+
+    /**
+     * Reject a {@see \Neos\ContentRepository\Core\Feature\NodeVariation\Command\CreateNodeVariant}
+     * when the resulting variant rows (one per DSP covered from $targetOrigin)
+     * would collide with existing rows in the target dimension — typically
+     * because the parent's effective uriPath differs from source to target.
+     */
+    public function checkVariant(
+        ContentRepositoryId $contentRepositoryId,
+        NodeAggregateId $nodeAggregateId,
+        OriginDimensionSpacePoint $sourceOrigin,
+        OriginDimensionSpacePoint $targetOrigin,
+    ): CollisionList {
+        $contentRepository = $this->contentRepositoryRegistry->get($contentRepositoryId);
+        $finder = $contentRepository->projectionState(DocumentUriPathFinder::class);
+        $tableNamePrefix = DocumentUriPathProjectionFactory::projectionTableNamePrefix($contentRepositoryId);
+        $folderLogic = new FolderUriPathLogic($finder, $this->dbal, $tableNamePrefix);
+
+        try {
+            $sourceRow = $finder->getByIdAndDimensionSpacePointHash(
+                $nodeAggregateId,
+                $sourceOrigin->toDimensionSpacePoint()->hash,
+            );
+        } catch (NodeNotFoundException) {
+            return CollisionList::empty();
+        }
+        $segment = basename($sourceRow->getUriPath());
+        if ($segment === '') {
+            return CollisionList::empty();
+        }
+        $parentId = $sourceRow->getParentNodeAggregateId();
+
+        $coveredDsps = $contentRepository->getVariationGraph()->getSpecializationSet(
+            $targetOrigin->toDimensionSpacePoint(),
+            true,
+        );
+
+        $collisions = CollisionList::empty();
+        foreach ($coveredDsps as $dsp) {
+            try {
+                $parent = $finder->getByIdAndDimensionSpacePointHash($parentId, $dsp->hash);
+            } catch (NodeNotFoundException) {
+                continue;
+            }
+            $candidateUriPath = $folderLogic->buildChildUriPath($segment, $parent, $dsp);
+            $collisions = $collisions->merge(
+                $this->queryCollisions($tableNamePrefix . '_uri', $dsp->hash, $candidateUriPath, $nodeAggregateId),
+            );
         }
 
         return $collisions;

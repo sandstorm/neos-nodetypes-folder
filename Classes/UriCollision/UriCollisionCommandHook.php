@@ -10,6 +10,8 @@ use Neos\ContentRepository\Core\CommandHandler\Commands;
 use Neos\ContentRepository\Core\EventStore\PublishedEvents;
 use Neos\ContentRepository\Core\Feature\NodeCreation\Command\CreateNodeAggregateWithNode;
 use Neos\ContentRepository\Core\Feature\NodeModification\Command\SetNodeProperties;
+use Neos\ContentRepository\Core\Feature\NodeMove\Command\MoveNodeAggregate;
+use Neos\ContentRepository\Core\Feature\NodeVariation\Command\CreateNodeVariant;
 use Neos\ContentRepository\Core\SharedModel\ContentRepository\ContentRepositoryId;
 use Neos\ContentRepository\Core\SharedModel\Node\NodeAggregateId;
 use Neos\Neos\FrontendRouting\Exception\NodeNotFoundException;
@@ -21,6 +23,9 @@ use Neos\ContentRepositoryRegistry\ContentRepositoryRegistry;
  * already exists in the projection — for any client of the content
  * repository (UI, API, import, CLI). Pairs with the editor-side validator
  * (Defense B), which shares {@see UriCollisionCheck}.
+ *
+ * @internal wiring class — instantiated by {@see UriCollisionCommandHookFactory}
+ *   per content-repository preset.
  */
 final readonly class UriCollisionCommandHook implements CommandHookInterface
 {
@@ -36,6 +41,8 @@ final readonly class UriCollisionCommandHook implements CommandHookInterface
         $collisions = match (true) {
             $command instanceof CreateNodeAggregateWithNode => $this->checkCreate($command),
             $command instanceof SetNodeProperties           => $this->checkSetProperties($command),
+            $command instanceof MoveNodeAggregate           => $this->checkMove($command),
+            $command instanceof CreateNodeVariant           => $this->checkVariant($command),
             default                                         => null,
         };
 
@@ -114,6 +121,30 @@ final readonly class UriCollisionCommandHook implements CommandHookInterface
         }
 
         return $collisions;
+    }
+
+    private function checkMove(MoveNodeAggregate $command): ?CollisionList
+    {
+        if ($command->newParentNodeAggregateId === null) {
+            // Sibling reorder under the same parent cannot shift the path.
+            return null;
+        }
+        return $this->uriCollisionCheck->checkMove(
+            $this->contentRepositoryId,
+            $command->nodeAggregateId,
+            $command->newParentNodeAggregateId,
+            $command->dimensionSpacePoint,
+        );
+    }
+
+    private function checkVariant(CreateNodeVariant $command): ?CollisionList
+    {
+        return $this->uriCollisionCheck->checkVariant(
+            $this->contentRepositoryId,
+            $command->nodeAggregateId,
+            $command->sourceOrigin,
+            $command->targetOrigin,
+        );
     }
 
     private function stringProperty(array $values, string $key): ?string
