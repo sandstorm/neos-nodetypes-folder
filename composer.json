@@ -6,6 +6,10 @@
     "require": {
         "neos/neos": "^9"
     },
+    "require-dev": {
+        "neos/contentrepository-testsuite": "*",
+        "mockery/mockery": "*"
+    },
     "autoload": {
         "psr-4": {
             "Sandstorm\\NodeTypes\\Folder\\": "Classes/"
