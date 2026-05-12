@@ -46,24 +46,25 @@ A `subscription:replay` rebuilds from the same events → reproduces the same br
 - **Migration data backfill:** no. The migration adds the column only. Existing data is corrected by `subscription:replay` post-deploy.
 - **Restore the neos/neos-development-collection#5778 underflow guard** in `whenSubtreeWasUntagged`. PR #3 dropped it; we keep it.
 - **No `NodeTypeManager` reads added in the projection.** The default of the new `hideurisegment` column is read from the event's property values (`hideSegmentInUriPath`), not by asking the `NodeTypeManager`. Existing core `NodeTypeManager` reads (`getDocumentTypeClassification`) stay — out of scope.
-- **Keep the projection fork close to upstream core ("Step C, C-lean variant"):** drop the defensive parent-chain walk in `generateUriPath`; trust the row's already-correctly-built `uriPath`. Helper shrinks to ~70 LOC.
+- **Keep the projection fork close to upstream core ("Step C, Option A"):** move the parent-chain walk from the projection into a `FolderUriPathLogic` helper. The walk is load-bearing, not defensive: a transparent folder's own row stores its segment in `uriPath`, but descendants must exclude it; the walk reconciles the two rules. (The earlier "C-lean" idea of dropping the walk was rejected — it would have computed `folder/child` instead of `child` for any descendant of a folder.)
 
 ## Implementation plan
 
-### 1. New file: `FolderUriPathLogic` (~70 LOC)
+### 1. New file: `FolderUriPathLogic` (~120 LOC, Option A)
 
 `Classes/FrontendRouting/Projection/FolderUriPathLogic.php`
 
-All folder-transparency decisions and DB rewrites live here so the forked projection file stays as close to Neos core as possible.
+All folder-transparency decisions and DB rewrites live here so the forked projection file stays close to Neos core.
 
-Public API:
+Public API (grows commit by commit):
 
-- `isTransparentFolder(DocumentNodeInfo $node): bool` — reads the `hideurisegment` column off the row (via `toArray()` so no Neos core class needs patching).
-- `hideUriSegmentForInsert(array $propertyValues): int` — pure function over the event's `hideSegmentInUriPath`, defaulting to `0`. **No `NodeTypeManager` lookup.**
-- `buildChildUriPath(DocumentNodeInfo $parent, string $segment, ?NodeName $nodeName): string` — `parent.uriPath + '/' + segment` (or `''` for site), no parent-chain walk (C-lean).
-- `applyHideToggle(DocumentNodeInfo $folder, bool $newHide, DimensionSpacePoint $dsp): void` — updates the folder row's `hideurisegment` and rewrites every descendant's `uriPath` in one UPDATE (insert or strip the folder segment depending on direction).
+- (C2) `buildChildUriPath(string $segment, DocumentNodeInfo $parent, DimensionSpacePoint $dsp): string` — walks parent chain in the given dimension, skipping transparent folder ancestors. Load-bearing because a folder's own row stores its own segment but descendants must exclude it.
+- (C2) `buildParentUriPath(DocumentNodeInfo $parent, DimensionSpacePoint $dsp): string` — same walk, returns just the joined parent path (used by `moveNode`).
+- (C4) `isTransparentFolder(DocumentNodeInfo $node): bool` — reads the `hideurisegment` column off the row (via `toArray()`, no Neos core patching). Replaces the in-walk `NodeTypeManager::isOfType('Folder')` check.
+- (C4) `hideUriSegmentForInsert(array $propertyValues): int` — pure function over the event's `hideSegmentInUriPath`. **No `NodeTypeManager` lookup at projection time.**
+- (C4) `applyHideToggle(DocumentNodeInfo $folder, bool $newHide, DimensionSpacePoint $dsp): void` — updates the folder row's `hideurisegment` and rewrites every descendant's `uriPath` in one UPDATE (insert or strip the folder segment depending on direction).
 
-Dependencies (constructor): `Connection $dbal`, `string $tableNamePrefix`. No `NodeTypeManager`, no `DocumentUriPathFinder`.
+Dependencies (C2 constructor): `NodeTypeManager` + `DocumentUriPathFinder`. C4 adds `Connection $dbal` + `string $tableNamePrefix` for `applyHideToggle`. After C4 the in-walk NodeTypeManager check is replaced with a column read; the constructor dep stays only because other places in the projection still use it (`getDocumentTypeClassification`, etc.).
 
 ### 2. Fork: `DocumentUriPathProjection.php`
 
@@ -94,22 +95,9 @@ Wraps the core `DocumentUriPathSchemaBuilder` and adds:
 hideurisegment INT UNSIGNED NOT NULL DEFAULT 0
 ```
 
-### 4. Migration
+### 4. ~~Doctrine migration~~ (not needed)
 
-`Migrations/Mysql/Version20260413000000.php`
-
-`up()`:
-
-```sql
-ALTER TABLE `cr_default_p_neos_documenturipath_uri`
-  ADD COLUMN `hideurisegment` INT UNSIGNED NOT NULL DEFAULT 0
-```
-
-No backfill. `subscription:replay` after deploy will populate it correctly from event history.
-
-`down()`: drop the column.
-
-Idempotent on both directions (`hasColumn` checks).
+The projection's `setUp()` runs `DbalSchemaDiff::determineRequiredSqlStatements` against `FolderAwareDocumentUriPathSchemaBuilder`, so `./flow cr:setup` will add the `hideurisegment` column on its own. No separate Doctrine migration required.
 
 ### 5. CatchUpHook: `FolderRouterCacheHook` + factory (already in PR #3)
 
@@ -157,7 +145,6 @@ This validator is the **only** collision defense. We deliberately do not:
 ### 7. Deploy procedure
 
 ```
-./flow doctrine:migrate
 ./flow cr:setup
 ./flow subscription:replay
 ```
@@ -178,7 +165,6 @@ This validator is the **only** collision defense. We deliberately do not:
 | `Classes/FrontendRouting/CatchUpHook/FolderRouterCacheHook.php` | new | from PR #3 |
 | `Classes/FrontendRouting/CatchUpHook/FolderRouterCacheHookFactory.php` | new | from PR #3 |
 | `Classes/Controller/UriCollisionController.php` | new | Bug E |
-| `Migrations/Mysql/Version20260413000000.php` | new | from PR #3 (column only, no backfill) |
 | `Configuration/Settings.yaml` | extend | catch-up hook wiring |
 | `Configuration/Routes.yaml` | new or extend | collision-check route |
 | `Configuration/NodeTypes.Mixin.HideUriSegment.yaml` | extend | bind async validator |

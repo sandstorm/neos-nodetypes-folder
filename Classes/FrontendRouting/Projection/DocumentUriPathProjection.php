@@ -4,7 +4,6 @@ declare(strict_types=1);
 
 namespace Sandstorm\NodeTypes\Folder\FrontendRouting\Projection;
 
-use Doctrine\Common\Collections\Expr\Value;
 use Doctrine\DBAL\Connection;
 use Doctrine\DBAL\Exception as DBALException;
 use Doctrine\DBAL\Types\Types;
@@ -53,6 +52,9 @@ final class DocumentUriPathProjection implements ProjectionInterface
 
     private DocumentUriPathFinder $documentUriPathFinder;
 
+    // PATCH(Folder): all folder-specific decisions live here so this file stays close to core.
+    private FolderUriPathLogic $folderLogic;
+
     /**
      * @var array<string, DocumentTypeClassification>
      */
@@ -64,6 +66,7 @@ final class DocumentUriPathProjection implements ProjectionInterface
         private readonly string $tableNamePrefix,
     ) {
         $this->documentUriPathFinder = new DocumentUriPathFinder($this->dbal, $this->tableNamePrefix);
+        $this->folderLogic = new FolderUriPathLogic($this->nodeTypeManager, $this->documentUriPathFinder);
     }
 
     public function setUp(): void
@@ -273,11 +276,8 @@ final class DocumentUriPathProjection implements ProjectionInterface
             if ($parentNode->isRoot() && $event->nodeName !== null) {
                 $siteNodeName = SiteNodeName::fromNodeName($event->nodeName);
             } else {
-                $uriPath = $this->generateUriPath(
-                    $uriPathSegment,
-                    $parentNode,
-                    $dimensionSpacePoint
-                );
+                // PATCH(Folder): walk parents skipping transparent folders (load-bearing for descendants).
+                $uriPath = $this->folderLogic->buildChildUriPath($uriPathSegment, $parentNode, $dimensionSpacePoint);
                 $siteNodeName = $parentNode->getSiteNodeName();
             }
 
@@ -298,72 +298,6 @@ final class DocumentUriPathProjection implements ProjectionInterface
                 'isPlaceholder' => (int)($documentTypeClassification === DocumentTypeClassification::CLASSIFICATION_UNKNOWN)
             ]);
         }
-    }
-
-    private function generateUriPath(
-        string $uriPathSegment,
-        DocumentNodeInfo $parentNode,
-        DimensionSpacePoint $dimensionSpacePoint
-    ): string {
-        $uriPath = $uriPathSegment;
-
-        $parentNodeForUriCreation = $parentNode;
-
-        while (!$parentNodeForUriCreation->isRoot()) {
-            $nodeType = $this->nodeTypeManager->getNodeType($parentNodeForUriCreation->getNodeTypeName());
-
-            if ($nodeType !== null && !$nodeType->isOfType('Sandstorm.NodeTypes.Folder:Document.Folder')) {
-                $basename = basename($parentNodeForUriCreation->getUriPath());
-                if (!empty($basename)) {
-                    $uriPath =  $basename . '/' . $uriPath;
-                }
-            }
-
-            $parentNodeForUriCreation = $this->tryGetNode(fn() => $this->documentUriPathFinder->getByIdAndDimensionSpacePointHash(
-                $parentNodeForUriCreation->getParentNodeAggregateId(),
-                $dimensionSpacePoint->hash
-            ));
-
-            // Break if parent couldn't be found (shouldn't happen, but safety check)
-            if ($parentNodeForUriCreation === null) {
-                break;
-            }
-        }
-
-        return $uriPath;
-    }
-
-    // Calculate the new parent's URI path with folder-aware logic
-    // This skips folder-type nodes and returns just the parent's path
-    private function generateParentUriPath(
-        DocumentNodeInfo $parentNode,
-        DimensionSpacePoint $dimensionSpacePoint
-    ): string {
-        $pathSegments = [];
-
-        $currentNode = $parentNode;
-        while (!$currentNode->isRoot()) {
-            $nodeType = $this->nodeTypeManager->getNodeType($currentNode->getNodeTypeName());
-
-            if ($nodeType !== null && !$nodeType->isOfType('Sandstorm.NodeTypes.Folder:Document.Folder')) {
-                $basename = basename($currentNode->getUriPath());
-                if (!empty($basename)) {
-                    array_unshift($pathSegments, $basename);
-                }
-            }
-
-            $currentNode = $this->tryGetNode(fn() => $this->documentUriPathFinder->getByIdAndDimensionSpacePointHash(
-                $currentNode->getParentNodeAggregateId(),
-                $dimensionSpacePoint->hash
-            ));
-
-            // Break if parent couldn't be found (shouldn't happen, but safety check)
-            if ($currentNode === null) {
-                break;
-            }
-        }
-
-        return implode('/', $pathSegments);
     }
 
     private function whenNodeAggregateTypeWasChanged(NodeAggregateTypeWasChanged $event): void
@@ -471,20 +405,16 @@ final class DocumentUriPathProjection implements ProjectionInterface
                 $interdimensionalSibling->dimensionSpacePoint->hash
             ));
             if ($parentNode !== null) {
-                // Check if this is a folder node - use folder-aware URI generation
-                $nodeType = $this->nodeTypeManager->getNodeType($sourceNode->getNodeTypeName());
-                if ($nodeType !== null && $nodeType->isOfType('Sandstorm.NodeTypes.Folder:Document.Folder')) {
-                    // For folder nodes, use the parent's URI path directly (folders don't contribute to URIs)
-                    $uriPath = $parentNode->getUriPath();
-                } else {
-                    $uriPathSegments = explode('/', $sourceNode->getUriPath());
-                    $uriPathSegment = $uriPathSegments[array_key_last($uriPathSegments)];
-                    $uriPath = $parentNode->getUriPath() === ''
-                        ? $uriPathSegment
-                        : $parentNode->getUriPath() . '/' . $uriPathSegment;
-
-                    $targetNode = $targetNode->withUriPath($uriPath);
-                }
+                // PATCH(Folder): always rebuild uriPath against the target-dim parent so folder
+                // transparency is honored in the target dimension. The source row's uriPath
+                // ends with this node's own segment (basename works for both folder and
+                // non-folder rows because folders' own rows store their segment too).
+                // Previously the folder branch computed a uriPath but never assigned it,
+                // causing target rows to keep the source-dim path verbatim.
+                $segment = basename($sourceNode->getUriPath());
+                $targetNode = $targetNode->withUriPath(
+                    $this->folderLogic->buildChildUriPath($segment, $parentNode, $interdimensionalSibling->dimensionSpacePoint)
+                );
             }
 
             $this->insertNode($targetNode->toArray());
@@ -725,10 +655,8 @@ final class DocumentUriPathProjection implements ProjectionInterface
             $node->getDimensionSpacePointHash()
         ));
 
-        $newParentUriPath = $this->generateParentUriPath(
-            $newParentNode,
-            $dimensionSpacePoint
-        );
+        // PATCH(Folder): rebuild parent uriPath in the moved dimension, skipping transparent folders.
+        $newParentUriPath = $this->folderLogic->buildParentUriPath($newParentNode, $dimensionSpacePoint);
 
         $disabledDelta = $newParentNode->getDisableLevel() - $node->getDisableLevel();
         if ($this->isNodeExplicitlyDisabled($node, $oldParentNode)) {
