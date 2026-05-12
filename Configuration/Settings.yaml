@@ -14,3 +14,6 @@ Neos:
         projections:
           "Neos.Neos:DocumentUriPathProjection":
             factoryObjectName: Sandstorm\NodeTypes\Folder\FrontendRouting\Projection\DocumentUriPathProjectionFactory
+            catchUpHooks:
+              "Sandstorm.NodeTypes.Folder:FlushRouteCache":
+                factoryObjectName: Sandstorm\NodeTypes\Folder\FrontendRouting\CatchUpHook\FolderRouterCacheHookFactory
