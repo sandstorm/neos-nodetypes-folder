@@ -40,7 +40,6 @@ use Neos\Neos\FrontendRouting\Exception\NodeNotFoundException;
 use Neos\Neos\FrontendRouting\Projection\DocumentNodeInfo;
 use Neos\Neos\FrontendRouting\Projection\DocumentTypeClassification;
 use Neos\Neos\FrontendRouting\Projection\DocumentUriPathFinder;
-use Neos\Neos\FrontendRouting\Projection\DocumentUriPathSchemaBuilder;
 
 /**
  * @implements ProjectionInterface<DocumentUriPathFinder>
@@ -97,7 +96,8 @@ final class DocumentUriPathProjection implements ProjectionInterface
      */
     private function determineRequiredSqlStatements(): array
     {
-        $schema = (new DocumentUriPathSchemaBuilder($this->tableNamePrefix))->buildSchema($this->dbal);
+        // PATCH(Folder): use folder-aware schema builder so cr:setup knows about the `hideurisegment` column.
+        $schema = (new FolderAwareDocumentUriPathSchemaBuilder($this->tableNamePrefix))->buildSchema($this->dbal);
         $statements = DbalSchemaDiff::determineRequiredSqlStatements($this->dbal, $schema);
 
         return $statements;
