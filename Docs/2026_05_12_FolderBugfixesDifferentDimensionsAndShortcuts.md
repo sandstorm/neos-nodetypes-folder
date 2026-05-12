@@ -121,7 +121,11 @@ Neos:
                 factoryObjectName: Sandstorm\NodeTypes\Folder\FrontendRouting\CatchUpHook\FolderRouterCacheHookFactory
 ```
 
-### 6. Inspector async collision validator (Bug E fix)
+### 6. URI collision prevention (Bug E fix) — moved to companion doc
+
+Two-part plan (CQRS write-side rejection + editor-side async validator) deferred to `Docs/2026_05_12_EditorUriCollisionValidator.md`. Not implemented in this changeset.
+
+
 
 Goal: when an editor edits `uriPathSegment` on **node creation OR rename** of any node whose effective URL parent contains a transparent folder, the Inspector blocks save if the resulting `uriPath` would collide with an existing row in `*_documenturipath_uri`.
 
@@ -164,11 +168,9 @@ This validator is the **only** collision defense. We deliberately do not:
 | `Classes/FrontendRouting/Projection/FolderUriPathLogic.php` | new | extracted helper (~70 LOC) |
 | `Classes/FrontendRouting/CatchUpHook/FolderRouterCacheHook.php` | new | from PR #3 |
 | `Classes/FrontendRouting/CatchUpHook/FolderRouterCacheHookFactory.php` | new | from PR #3 |
-| `Classes/Controller/UriCollisionController.php` | new | Bug E |
 | `Configuration/Settings.yaml` | extend | catch-up hook wiring |
-| `Configuration/Routes.yaml` | new or extend | collision-check route |
-| `Configuration/NodeTypes.Mixin.HideUriSegment.yaml` | extend | bind async validator |
-| `Resources/Public/...` (optional) | new | JS plugin if needed |
+
+(Bug E validator: see companion plan doc — not part of this changeset.)
 
 ## Out of scope
 
