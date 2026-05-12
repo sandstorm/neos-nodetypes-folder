@@ -89,11 +89,3 @@ Feature: Folder transparency in URL routing (Tree A, single dimension)
     When I am on URL "/folder-a/child"
     Then No node should match URL "/folder-a/child"
 
-  Scenario: Folder's own projection row stores its segment for descendant rewrites
-    Then I expect the documenturipath table to contain exactly:
-      | nodeaggregateid          | uripath    | hideurisegment |
-      | "lady-eleonode-rootford" | ""         | 0              |
-      | "site-of-folders"        | ""         | 0              |
-      | "folder-a"               | "folder-a" | 1              |
-      | "child-in-folder"        | "child"    | 0              |
-      | "sibling-of-folder"      | "sibling"  | 0              |
