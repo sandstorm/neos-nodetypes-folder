@@ -154,6 +154,30 @@ final class FolderUriPathLogic
         );
     }
 
+    /**
+     * Pure mirror of the SQL inside {@see self::applyHideToggle()} — given a
+     * descendant's current uriPath, compute what it would become after toggling
+     * the folder's hide flag. Used by the write-side collision validator to
+     * predict post-toggle descendant paths without mutating the DB.
+     *
+     * Keep in lockstep with the SQL above.
+     */
+    public function computeHideToggledDescendantPath(
+        string $oldPath,
+        string $folderUriPath,
+        string $parentUriPath,
+        bool $newHide,
+    ): string {
+        if ($newHide) {
+            // opaque → transparent: strip folder segment
+            $suffix = substr($oldPath, strlen($folderUriPath) + 1);
+            return $parentUriPath === '' ? $suffix : $parentUriPath . '/' . $suffix;
+        }
+        // transparent → opaque: insert folder segment
+        $suffix = $parentUriPath === '' ? $oldPath : substr($oldPath, strlen($parentUriPath) + 1);
+        return $folderUriPath . '/' . $suffix;
+    }
+
     private function findParent(DocumentNodeInfo $node, DimensionSpacePoint $dimensionSpacePoint): ?DocumentNodeInfo
     {
         try {

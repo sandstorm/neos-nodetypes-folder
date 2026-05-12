@@ -17,3 +17,6 @@ Neos:
             catchUpHooks:
               "Sandstorm.NodeTypes.Folder:FlushRouteCache":
                 factoryObjectName: Sandstorm\NodeTypes\Folder\FrontendRouting\CatchUpHook\FolderRouterCacheHookFactory
+        commandHooks:
+          "Sandstorm.NodeTypes.Folder:PreventUriCollision":
+            factoryObjectName: Sandstorm\NodeTypes\Folder\UriCollision\UriCollisionCommandHookFactory
