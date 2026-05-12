@@ -66,7 +66,7 @@ final class DocumentUriPathProjection implements ProjectionInterface
         private readonly string $tableNamePrefix,
     ) {
         $this->documentUriPathFinder = new DocumentUriPathFinder($this->dbal, $this->tableNamePrefix);
-        $this->folderLogic = new FolderUriPathLogic($this->nodeTypeManager, $this->documentUriPathFinder);
+        $this->folderLogic = new FolderUriPathLogic($this->documentUriPathFinder, $this->dbal, $this->tableNamePrefix);
     }
 
     public function setUp(): void
@@ -295,7 +295,9 @@ final class DocumentUriPathProjection implements ProjectionInterface
                 'nodeTypeName' => $event->nodeTypeName->value,
                 'disabled' => $parentNode->getDisableLevel(),
                 'removed' => $parentNode->getRemovedLevel(),
-                'isPlaceholder' => (int)($documentTypeClassification === DocumentTypeClassification::CLASSIFICATION_UNKNOWN)
+                'isPlaceholder' => (int)($documentTypeClassification === DocumentTypeClassification::CLASSIFICATION_UNKNOWN),
+                // PATCH(Folder): derive folder transparency from event properties (no NodeTypeManager read).
+                'hideUriSegment' => $this->folderLogic->hideUriSegmentForInsert($propertyValues),
             ]);
         }
     }
@@ -538,6 +540,8 @@ final class DocumentUriPathProjection implements ProjectionInterface
             && !in_array('uriPathSegment', $unsetPropertyNames)
             && !isset($newPropertyValues['targetMode'])
             && !isset($newPropertyValues['target'])
+            // PATCH(Folder): the hideSegmentInUriPath toggle also requires handling here.
+            && !isset($newPropertyValues['hideSegmentInUriPath'])
         ) {
             return;
         }
@@ -569,13 +573,15 @@ final class DocumentUriPathProjection implements ProjectionInterface
                 );
             }
 
-            if (!isset($newPropertyValues['uriPathSegment']) && !in_array('uriPathSegment', $unsetPropertyNames)) {
-                continue;
+            // PATCH(Folder): apply hideSegmentInUriPath toggle before any uriPath rewrite.
+            // Updates the folder's column and rewrites descendant uriPaths.
+            $isTransparentAfter = $this->folderLogic->isTransparentFolder($node);
+            if (isset($newPropertyValues['hideSegmentInUriPath'])) {
+                $isTransparentAfter = (bool)$newPropertyValues['hideSegmentInUriPath'];
+                $this->folderLogic->applyHideToggle($node, $isTransparentAfter, $affectedDimensionSpacePoint);
             }
 
-            // Check if this is a folder node - folders don't appear in URIs, so skip URI updates
-            $nodeType = $this->nodeTypeManager->getNodeType($node->getNodeTypeName());
-            if ($nodeType !== null && $nodeType->isOfType('Sandstorm.NodeTypes.Folder:Document.Folder')) {
+            if (!isset($newPropertyValues['uriPathSegment']) && !in_array('uriPathSegment', $unsetPropertyNames)) {
                 continue;
             }
 
@@ -583,6 +589,17 @@ final class DocumentUriPathProjection implements ProjectionInterface
             $uriPathSegments = explode('/', $oldUriPath);
             $uriPathSegments[array_key_last($uriPathSegments)] = ($newPropertyValues['uriPathSegment'] ?? '') ?: $event->nodeAggregateId->value;
             $newUriPath = implode('/', $uriPathSegments);
+
+            // PATCH(Folder): on a transparent folder, descendants' uriPaths do not contain the
+            // folder's segment, so only the folder's own row must be updated.
+            if ($isTransparentAfter) {
+                $this->updateNodeByIdAndDimensionSpacePointHash(
+                    $event->nodeAggregateId,
+                    $affectedDimensionSpacePoint->hash,
+                    ['uriPath' => $newUriPath]
+                );
+                continue;
+            }
 
             $this->updateNodeQuery(
                 'SET uriPath = CONCAT(:newUriPath, SUBSTRING(uriPath, LENGTH(:oldUriPath) + 1))
@@ -971,6 +988,8 @@ final class DocumentUriPathProjection implements ProjectionInterface
     {
         if ($event->workspaceName->isLive()) {
             try {
+                // PATCH(Folder): include `hideurisegment` in the shine-through copy so folder
+                // transparency carries into newly created dimensions.
                 $this->dbal->executeStatement('INSERT INTO ' . $this->tableNamePrefix . '_uri (
                     nodeaggregateid,
                     uripath,
@@ -985,7 +1004,8 @@ final class DocumentUriPathProjection implements ProjectionInterface
                     succeedingnodeaggregateid,
                     shortcuttarget,
                     nodetypename,
-                    isplaceholder
+                    isplaceholder,
+                    hideurisegment
                 )
                 SELECT
                     nodeaggregateid,
@@ -1001,7 +1021,8 @@ final class DocumentUriPathProjection implements ProjectionInterface
                     succeedingnodeaggregateid,
                     shortcuttarget,
                     nodetypename,
-                    isplaceholder
+                    isplaceholder,
+                    hideurisegment
                 FROM
                     ' . $this->tableNamePrefix . '_uri
                 WHERE
