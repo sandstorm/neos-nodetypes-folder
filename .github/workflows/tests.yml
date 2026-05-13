@@ -28,7 +28,7 @@ jobs:
           --health-interval=10s --health-timeout=5s --health-retries=10
 
     env:
-      NEOS_TARGET_VERSION: "9.0"
+      NEOS_TARGET_VERSION: "9.1"
       FLOW_CONTEXT: Testing/Behat
 
     steps:
@@ -84,22 +84,6 @@ jobs:
         env:
           COMPOSER_MIRROR_PATH_REPOS: "1"
         run: composer update --no-progress --no-interaction --prefer-source
-
-      - name: Debug — show installed Neos.Neos layout
-        working-directory: distribution
-        run: |
-          echo "--- top-level Packages/ ---"
-          ls Packages/
-          echo "--- Packages/Application/ ---"
-          ls Packages/Application/ 2>/dev/null || echo "no Application dir"
-          echo "--- looking for Neos.Neos anywhere ---"
-          find Packages -maxdepth 3 -name "Neos.Neos" -type d
-          echo "--- looking for RoutingTrait.php anywhere ---"
-          find Packages -name "RoutingTrait.php"
-          echo "--- is our plugin install a symlink? ---"
-          ls -la Packages/Plugins/
-          echo "--- realpath of FeatureContext.php from PHP ---"
-          php -r 'echo realpath("Packages/Plugins/Sandstorm.NodeTypes.Folder/Tests/Behavior/Features/Bootstrap/FeatureContext.php"), PHP_EOL;'
 
       - name: Configure Flow for Testing/Behat
         working-directory: distribution
