@@ -67,9 +67,15 @@ jobs:
 
       - name: Install dependencies
         working-directory: distribution
-        # --prefer-source clones from git instead of fetching dist tarballs, so
-        # Tests/ directories (export-ignored in tarballs) are present —
-        # FeatureContext.php require_once's Neos.Neos's RoutingTrait.php.
+        # --prefer-source: clone from git so Tests/ (export-ignored in dist
+        #   tarballs) lands in Packages/, needed by FeatureContext require_once
+        #   of Neos.Neos's RoutingTrait.php.
+        # COMPOSER_MIRROR_PATH_REPOS=1: copy our path-repo package instead of
+        #   symlinking it, so PHP's __DIR__ (which resolves symlinks) stays
+        #   inside distribution/Packages/Plugins/... — otherwise the relative
+        #   ../../../../../../Application/Neos.Neos path escapes the install.
+        env:
+          COMPOSER_MIRROR_PATH_REPOS: "1"
         run: composer update --no-progress --no-interaction --prefer-source
 
       - name: Debug — show installed Neos.Neos layout
@@ -83,6 +89,10 @@ jobs:
           find Packages -maxdepth 3 -name "Neos.Neos" -type d
           echo "--- looking for RoutingTrait.php anywhere ---"
           find Packages -name "RoutingTrait.php"
+          echo "--- is our plugin install a symlink? ---"
+          ls -la Packages/Plugins/
+          echo "--- realpath of FeatureContext.php from PHP ---"
+          php -r 'echo realpath("Packages/Plugins/Sandstorm.NodeTypes.Folder/Tests/Behavior/Features/Bootstrap/FeatureContext.php"), PHP_EOL;'
 
       - name: Configure Flow for Testing/Behat
         working-directory: distribution
