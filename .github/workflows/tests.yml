@@ -67,7 +67,10 @@ jobs:
 
       - name: Install dependencies
         working-directory: distribution
-        run: composer update --no-progress --no-interaction
+        # --prefer-source clones from git instead of fetching dist tarballs, so
+        # Tests/ directories (export-ignored in tarballs) are present —
+        # FeatureContext.php require_once's Neos.Neos's RoutingTrait.php.
+        run: composer update --no-progress --no-interaction --prefer-source
 
       - name: Configure Flow for Testing/Behat
         working-directory: distribution
