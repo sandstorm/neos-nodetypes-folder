@@ -64,6 +64,9 @@ jobs:
           composer config repositories.sandstormFolder \
             '{"type": "path", "url": "../package", "options": {"symlink": false}}'
           composer require --no-update sandstorm/neos-nodetypes-folder:"@dev"
+          # neos/behat ships bin/behat + Neos\Behat\FlowBootstrapTrait — both
+          # needed by FeatureContext but absent from base-distribution.
+          composer require --no-update --dev neos/behat:"~9.0.0"
 
       - name: Install dependencies
         working-directory: distribution
