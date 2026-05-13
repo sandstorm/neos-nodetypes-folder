@@ -44,10 +44,10 @@ jobs:
           extensions: mbstring, xml, json, intl, pdo_mysql, mysql, gd, zip
           ini-values: date.timezone="UTC", opcache.fast_shutdown=0
 
-      - name: Checkout Neos development distribution
+      - name: Checkout Neos base distribution
         uses: actions/checkout@v4
         with:
-          repository: neos/neos-development-distribution
+          repository: neos/neos-base-distribution
           ref: ${{ env.NEOS_TARGET_VERSION }}
           path: distribution
 
@@ -71,6 +71,18 @@ jobs:
         # Tests/ directories (export-ignored in tarballs) are present —
         # FeatureContext.php require_once's Neos.Neos's RoutingTrait.php.
         run: composer update --no-progress --no-interaction --prefer-source
+
+      - name: Debug — show installed Neos.Neos layout
+        working-directory: distribution
+        run: |
+          echo "--- top-level Packages/ ---"
+          ls Packages/
+          echo "--- Packages/Application/ ---"
+          ls Packages/Application/ 2>/dev/null || echo "no Application dir"
+          echo "--- looking for Neos.Neos anywhere ---"
+          find Packages -maxdepth 3 -name "Neos.Neos" -type d
+          echo "--- looking for RoutingTrait.php anywhere ---"
+          find Packages -name "RoutingTrait.php"
 
       - name: Configure Flow for Testing/Behat
         working-directory: distribution
