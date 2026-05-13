@@ -1,0 +1,95 @@
+name: tests
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  behat:
+    name: Behavioral tests (PHP 8.3, MariaDB)
+    runs-on: ubuntu-latest
+
+    services:
+      mariadb:
+        image: mariadb:10.11
+        env:
+          MARIADB_USER: neos
+          MARIADB_PASSWORD: neos
+          MARIADB_DATABASE: flow_functional_testing
+          MARIADB_ROOT_PASSWORD: neos
+        ports:
+          - "3306:3306"
+        options: >-
+          --health-cmd="healthcheck.sh --connect --innodb_initialized"
+          --health-interval=10s --health-timeout=5s --health-retries=10
+
+    env:
+      NEOS_TARGET_VERSION: "9.0"
+      FLOW_CONTEXT: Testing/Behat
+
+    steps:
+      - name: Checkout package
+        uses: actions/checkout@v4
+        with:
+          path: package
+
+      - name: Setup PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: "8.3"
+          extensions: mbstring, xml, json, intl, pdo_mysql, mysql, gd, zip
+          ini-values: date.timezone="UTC", opcache.fast_shutdown=0
+
+      - name: Checkout Neos development distribution
+        uses: actions/checkout@v4
+        with:
+          repository: neos/neos-development-distribution
+          ref: ${{ env.NEOS_TARGET_VERSION }}
+          path: distribution
+
+      - name: Cache composer downloads
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/composer
+          key: composer-php8.3-neos9-${{ hashFiles('package/composer.json') }}
+          restore-keys: composer-php8.3-neos9-
+
+      - name: Wire package into distribution
+        working-directory: distribution
+        run: |
+          composer config repositories.sandstormFolder \
+            '{"type": "path", "url": "../package", "options": {"symlink": false}}'
+          composer require --no-update sandstorm/neos-nodetypes-folder:"@dev"
+
+      - name: Install dependencies
+        working-directory: distribution
+        run: composer update --no-progress --no-interaction
+
+      - name: Configure Flow for Testing/Behat
+        working-directory: distribution
+        run: |
+          mkdir -p Configuration/Testing/Behat
+          cat > Configuration/Testing/Behat/Settings.yaml <<'YAML'
+          Neos:
+            Flow:
+              persistence:
+                backendOptions:
+                  driver: pdo_mysql
+                  host: '127.0.0.1'
+                  port: 3306
+                  user: 'neos'
+                  password: 'neos'
+                  dbname: 'flow_functional_testing'
+                  charset: 'utf8mb4'
+          YAML
+
+      - name: Run doctrine migrations
+        working-directory: distribution
+        run: ./flow doctrine:migrate --quiet
+
+      - name: Run Behat tests
+        working-directory: distribution
+        run: bin/behat -c Packages/Plugins/Sandstorm.NodeTypes.Folder/Tests/Behavior/behat.yml.dist
