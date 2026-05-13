@@ -64,9 +64,13 @@ jobs:
           composer config repositories.sandstormFolder \
             '{"type": "path", "url": "../package", "options": {"symlink": false}}'
           composer require --no-update sandstorm/neos-nodetypes-folder:"@dev"
-          # neos/behat ships bin/behat + Neos\Behat\FlowBootstrapTrait — both
-          # needed by FeatureContext but absent from base-distribution.
-          composer require --no-update --dev neos/behat:"~9.0.0"
+          # Test-only deps that base-distribution doesn't ship but
+          # FeatureContext relies on. The package itself declares these in
+          # its require-dev — but composer doesn't transitively install
+          # require-dev of required packages, so we add them at the root.
+          composer require --no-update --dev \
+            neos/behat:"~9.0.0" \
+            neos/contentrepository-testsuite:"^9.1"
 
       - name: Install dependencies
         working-directory: distribution
