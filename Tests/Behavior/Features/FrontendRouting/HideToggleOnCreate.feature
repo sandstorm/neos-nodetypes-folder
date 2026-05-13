@@ -1,10 +1,15 @@
 @flowEntities @contentrepository
-Feature: Folder created opaque, then toggled to transparent
+Feature: A folder created opaque can be toggled to transparent later
 
-  Covers the difference between the "insert path" (`hideUriSegmentForInsert`)
-  and the "toggle path" (`applyHideToggle`). A folder created with
-  `hideSegmentInUriPath: false` exposes its segment in descendant URLs from the
-  start; a subsequent toggle to `true` must re-route descendants transparently.
+  A folder created with hide=false exposes its segment in descendant URLs from
+  the moment children are added underneath it. Toggling the same folder to
+  hide=true later must hide the segment for every existing descendant — even
+  though those descendants were never re-saved themselves.
+
+      lady-eleonode-rootford
+      └─ site-of-folders          (Test.Routing.Page, name "node1", segment "site-ignored")
+         └─ folder-opaque         (Folder, hide=false, segment "folder-a")
+            └─ child-in-folder    (Test.Routing.Page, segment "child")
 
   Background:
     Given using no content dimensions

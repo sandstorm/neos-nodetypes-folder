@@ -1,19 +1,15 @@
 @flowEntities @contentrepository
-Feature: Folder transparency in URL routing (Tree A, single dimension)
+Feature: A transparent folder is invisible in URLs
 
-  A transparent Document.Folder must not appear in resolved URLs and must not
-  be addressable as a URL segment when matching. Descendants of the folder are
-  routed as if the folder were not there. The folder's own projection row still
-  stores its segment in `uripath` so descendant rewrites can locate it; this is
-  load-bearing for the parent-chain walk in `FolderUriPathLogic`.
+  A folder marked transparent must not appear in URLs at all: its descendants
+  are routed as if the folder were not there, and a URL that contains the
+  folder's own segment must not match anything.
 
-  Tree A:
-
-      lady-eleonode-rootford (Neos.Neos:Sites)
-      └─ site-of-folders                    (Test.Routing.Page, name "node1", segment "site-ignored")
-         ├─ folder-a                        (Document.Folder, hide=true, segment "folder-a")
-         │  └─ child-in-folder              (Test.Routing.Page, segment "child")
-         └─ sibling-of-folder               (Test.Routing.Page, segment "sibling")
+      lady-eleonode-rootford
+      └─ site-of-folders        (Test.Routing.Page, name "node1", segment "site-ignored")
+         ├─ folder-a             (Folder, hide=true, segment "folder-a")
+         │  └─ child-in-folder   (Test.Routing.Page, segment "child")
+         └─ sibling-of-folder    (Test.Routing.Page, segment "sibling")
 
   Background:
     Given using no content dimensions

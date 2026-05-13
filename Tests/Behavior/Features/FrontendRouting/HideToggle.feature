@@ -1,17 +1,20 @@
 @flowEntities @contentrepository
-Feature: Toggling `hideSegmentInUriPath` on an existing folder rewires descendant URLs
+Feature: Flipping a folder's visibility rewires descendant URLs immediately
 
-  Exercises `FolderUriPathLogic::applyHideToggle` end-to-end via `SetNodeProperties`:
-    - hide=true → false: descendants pick up the folder segment, transparent URL stops matching.
-    - hide=false → true: descendants drop the folder segment, transparent URL matches again.
-
-  Tree A:
+  An editor toggles a folder between transparent and opaque after content
+  already exists below it. The URLs of every descendant must reflect the new
+  state straight away:
+    - hide=true → false: the folder segment appears in descendant URLs, the
+      pre-toggle (transparent) URL stops matching.
+    - hide=false → true: the folder segment disappears again, the
+      pre-toggle (opaque) URL stops matching.
+    - same-value set: no URL changes.
 
       lady-eleonode-rootford
       └─ site-of-folders        (Test.Routing.Page, name "node1", segment "site-ignored")
-         ├─ folder-a            (Folder, hide=true, segment "folder-a")
-         │  └─ child-in-folder  (Test.Routing.Page, segment "child")
-         └─ sibling-of-folder   (Test.Routing.Page, segment "sibling")
+         ├─ folder-a             (Folder, hide=true, segment "folder-a")
+         │  └─ child-in-folder   (Test.Routing.Page, segment "child")
+         └─ sibling-of-folder    (Test.Routing.Page, segment "sibling")
 
   Background:
     Given using no content dimensions

@@ -1,10 +1,18 @@
 @flowEntities @contentrepository
-Feature: Moving a node between transparent / opaque parents recomputes its URL correctly
+Feature: Moving a node between folders recomputes its URL based on the new parent's visibility
 
-  Exercises `FolderUriPathLogic::buildParentUriPath()` via the projection's
-  `moveNode` branch. Moving a descendant out of a transparent folder must add
-  the new parent's segments to its URL; moving into a transparent folder must
-  drop them.
+  When an editor drags a page from under one folder into another, its URL must
+  recompute against the new parent chain:
+    - move into another transparent folder → URL stays flat.
+    - move into an opaque folder → URL picks up the opaque folder's segment.
+    - move back out into a transparent folder → URL drops the segment again.
+
+      lady-eleonode-rootford
+      └─ site-of-folders         (Test.Routing.Page, name "node1", segment "site-ignored")
+         ├─ folder-a              (Folder, hide=true,  segment "folder-a")
+         │  └─ mover              (Test.Routing.Page, segment "mover")     ← moved between parents
+         ├─ folder-b              (Folder, hide=true,  segment "folder-b")
+         └─ folder-opaque         (Folder, hide=false, segment "visible-folder")
 
   Background:
     Given using no content dimensions

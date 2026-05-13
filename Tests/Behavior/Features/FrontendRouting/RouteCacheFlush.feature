@@ -1,12 +1,20 @@
 @flowEntities @contentrepository
-Feature: Route cache is flushed when `hideSegmentInUriPath` toggles
+Feature: Toggling a folder's visibility invalidates the route cache
 
-  Same shape as `Neos.Neos`' `RouteCache.feature`: warm the route cache by
-  resolving every relevant URL once, mutate the folder's hide flag via
-  `SetNodeProperties`, then assert the old URLs no longer match.
-  Without `FolderRouterCacheHook` flushing tags for folder + descendants, the
-  warm cache would still serve the pre-toggle answers and these assertions
-  would fail.
+  Neos caches the URL→node mapping that the router resolves. If we toggle a
+  folder between transparent and opaque, the old answers in that cache will
+  outlive the truth: visitors will keep being routed to the wrong place — or
+  to a 404 — until the cache entries are evicted.
+
+  This feature warms the cache first (by resolving a URL once), then toggles
+  the folder, then asserts that the old URL no longer matches. Without route
+  cache invalidation, the cache would still serve the pre-toggle answer and
+  these assertions would fail.
+
+      lady-eleonode-rootford
+      └─ site-of-folders        (Test.Routing.Page, name "node1", segment "site-ignored")
+         └─ folder-a             (Folder, hide=true, segment "folder-a")
+            └─ child-in-folder   (Test.Routing.Page, segment "child")
 
   Background:
     Given using no content dimensions

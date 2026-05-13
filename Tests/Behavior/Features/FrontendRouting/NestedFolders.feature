@@ -1,25 +1,23 @@
 @flowEntities @contentrepository
-Feature: Nested folders, mixed transparent / opaque, and uriPathSegment renames
+Feature: Folders nest, mix transparent with opaque, and rename predictably
 
-  Two-level nesting where a transparent folder contains both another transparent
-  folder AND an opaque folder. The opaque folder must contribute its segment to
-  descendant URLs; the transparent folders must not.
+  Two-level nesting where one branch contains another transparent folder and
+  the other branch contains an opaque folder (a Folder with hide=false, which
+  behaves like a normal Document). The opaque folder must contribute its
+  segment to descendant URLs; the transparent folders must not.
 
-  Renames split into two branches in the projection (hunk 4 of
-  `DocumentUriPathProjection`):
-    - opaque folder rename → cascading core UPDATE; descendants flip.
-    - transparent folder rename → folder-row-only UPDATE; descendants untouched.
+  Renames behave according to visibility:
+    - opaque folder rename → its URL changes, and all descendant URLs change too.
+    - transparent folder rename → no URL changes anywhere (the folder has no URL).
 
-  Tree B:
-
-      lady-eleonode-rootford (Neos.Neos:Sites)
-      └─ site-of-folders                       (Test.Routing.Page, name "node1", segment "site-ignored")
-         ├─ folder-outer                       (Folder, hide=true,  segment "folder-outer")
-         │  ├─ folder-inner-transparent        (Folder, hide=true,  segment "folder-inner-transparent")
-         │  │  └─ deep-child                   (Test.Routing.Page, segment "deep")
-         │  └─ folder-inner-opaque             (Folder, hide=false, segment "visible-folder")
-         │     └─ deep-child-2                 (Test.Routing.Page, segment "deep")
-         └─ regular-page                       (Test.Routing.Page, segment "regular")
+      lady-eleonode-rootford
+      └─ site-of-folders                    (Test.Routing.Page, name "node1", segment "site-ignored")
+         ├─ folder-outer                     (Folder, hide=true,  segment "folder-outer")
+         │  ├─ folder-inner-transparent      (Folder, hide=true,  segment "folder-inner-transparent")
+         │  │  └─ deep-child                 (Test.Routing.Page, segment "deep")
+         │  └─ folder-inner-opaque           (Folder, hide=false, segment "visible-folder")
+         │     └─ deep-child-2               (Test.Routing.Page, segment "deep")
+         └─ regular-page                     (Test.Routing.Page, segment "regular")
 
   Background:
     Given using no content dimensions
