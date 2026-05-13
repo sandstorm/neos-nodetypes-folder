@@ -108,12 +108,19 @@ final readonly class UriCollisionCheck
             ['id' => $folderId->value],
         );
 
+        $allDsps = $contentRepository->getVariationGraph()->getDimensionSpacePoints();
         foreach ($rows as $folderRow) {
             if ((bool)($folderRow['hideurisegment'] ?? false) === $newHide) {
                 continue;
             }
             $folderInfo = new DocumentNodeInfo($folderRow);
-            $dsp = DimensionSpacePoint::fromJsonString($folderRow['dimensionspacepoint']);
+            // The projection stores only the DSP hash. Reconstruct the full DSP from the
+            // variation graph so {@see FolderUriPathLogic::buildParentUriPath()} has a
+            // value to walk parents with.
+            $dsp = $allDsps[$folderRow['dimensionspacepointhash']] ?? null;
+            if ($dsp === null) {
+                continue;
+            }
 
             try {
                 $parent = $finder->getByIdAndDimensionSpacePointHash(
