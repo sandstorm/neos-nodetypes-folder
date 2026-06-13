@@ -1,13 +1,33 @@
 Neos:
+  Flow:
+    mvc:
+      routes:
+        Sandstorm.NodeTypes.Folder:
+          position: 'before Neos.Neos'
+    security:
+      authentication:
+        providers:
+          'Neos.Neos:Backend':
+            requestPatterns:
+              'Sandstorm.NodeTypes.Folder:UriCollisionController':
+                pattern: ControllerObjectName
+                patternOptions:
+                  controllerObjectNamePattern: 'Sandstorm\NodeTypes\Folder\Controller\.*'
   Neos:
     userInterface:
       translation:
         autoInclude:
           "Sandstorm.NodeTypes.Folder":
             - "NodeTypes/*/*"
+            - "Main"
     fusion:
       autoInclude:
         Sandstorm.NodeTypes.Folder: true
+#    Ui:
+#      resources:
+#        javascript:
+#          'Sandstorm.NodeTypes.Folder:UriCollisionPlugin':
+#            resource: 'resource://Sandstorm.NodeTypes.Folder/Public/UriCollisionPlugin/Plugin.js'
   ContentRepositoryRegistry:
     presets:
       "default":

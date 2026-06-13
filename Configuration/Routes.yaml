@@ -1,0 +1,10 @@
+-
+  name: 'Sandstorm.NodeTypes.Folder UriCollisionController->check'
+  uriPattern: 'neos/folder/check-uri-collision'
+  defaults:
+    '@package': Sandstorm.NodeTypes.Folder
+    '@controller': UriCollision
+    '@action': check
+    '@format': json
+  httpMethods:
+    - POST

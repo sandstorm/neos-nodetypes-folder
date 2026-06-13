@@ -41,6 +41,7 @@ class FeatureContext implements BehatContext
     use MigrationsTrait;
     use RoutingTrait;
     use ExceptionsTrait;
+    use HttpJsonPostTrait;
 
     protected Environment $environment;
 

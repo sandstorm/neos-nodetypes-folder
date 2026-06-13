@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<xliff version="1.2" xmlns="urn:oasis:names:tc:xliff:document:1.2">
+    <file original="" product-name="Sandstorm.NodeTypes.Folder" source-language="en" target-language="de" datatype="plaintext">
+        <body>
+            <trans-unit id="uriCollision.checking" xml:space="preserve">
+                <source>Checking URL availability…</source>
+                <target>URL-Verfügbarkeit wird geprüft…</target>
+            </trans-unit>
+            <trans-unit id="uriCollision.collision.single" xml:space="preserve">
+                <source>This URL would collide with another node ({uriPath}).</source>
+                <target>Diese URL würde mit einem anderen Knoten kollidieren ({uriPath}).</target>
+            </trans-unit>
+            <trans-unit id="uriCollision.collision.many" xml:space="preserve">
+                <source>This URL would collide with {count} other nodes.</source>
+                <target>Diese URL würde mit {count} anderen Knoten kollidieren.</target>
+            </trans-unit>
+        </body>
+    </file>
+</xliff>
