@@ -1,0 +1,6 @@
+[tasks."test:behavior"]
+description = "Run behavioral tests (usage: mise run test:behavior [Features/Smoke/Smoke.feature])"
+usage = '''
+arg "[testparams]" var=#true
+'''
+run = 'docker compose exec -e FLOW_CONTEXT=Testing/Behat neos bash -c "cd /app && ./flow doctrine:migrate && bin/behat -c Packages/Plugins/Sandstorm.NodeTypes.Folder/Tests/Behavior/behat.yml.dist ${usage_testparams}"'

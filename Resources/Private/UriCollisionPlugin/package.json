@@ -1,0 +1,21 @@
+{
+    "name": "@sandstorm/nodetypes-folder-uri-collision-plugin",
+    "version": "1.0.0",
+    "private": true,
+    "main": "./src/index.ts",
+    "scripts": {
+        "build": "node build.js",
+        "watch": "node build.js --watch"
+    },
+    "dependencies": {
+        "@neos-project/react-ui-components": "8.3.5"
+    },
+    "devDependencies": {
+        "@neos-project/neos-ui-extensibility": "^8.3",
+        "esbuild": "^0.25.0",
+        "typescript": "^5.7.3"
+    },
+    "neos": {
+        "buildTargetDirectory": "../../Public/UriCollisionPlugin/"
+    }
+}

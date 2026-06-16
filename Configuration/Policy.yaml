@@ -1,0 +1,11 @@
+privilegeTargets:
+  Neos\Flow\Security\Authorization\Privilege\Method\MethodPrivilege:
+    'Sandstorm.NodeTypes.Folder:UriCollisionController':
+      label: 'Editor-side URI collision check (Defense B)'
+      matcher: 'method(Sandstorm\NodeTypes\Folder\Controller\UriCollisionController->(.*)Action())'
+roles:
+  'Neos.Neos:Editor':
+    privileges:
+      -
+        privilegeTarget: 'Sandstorm.NodeTypes.Folder:UriCollisionController'
+        permission: GRANT

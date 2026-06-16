@@ -1,0 +1,10 @@
+# Behat-only override: in tests we don't go through the standard Neos backend
+# login flow, so the production policy (`Editor` only) would 403 every request.
+# Grant Everybody to keep the endpoint reachable; production policy still applies
+# in real contexts.
+roles:
+  'Neos.Flow:Everybody':
+    privileges:
+      -
+        privilegeTarget: 'Sandstorm.NodeTypes.Folder:UriCollisionController'
+        permission: GRANT
