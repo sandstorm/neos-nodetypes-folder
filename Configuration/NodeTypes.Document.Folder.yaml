@@ -1,6 +1,6 @@
 "Sandstorm.NodeTypes.Folder:Document.Folder":
   superTypes:
-    "Neos.Neos:Document": true
+    "Neos.Neos:Shortcut": true
     "Sandstorm.NodeTypes.Folder:Mixin.HideUriSegment": true
   ui:
     label: "i18n"
@@ -8,3 +8,13 @@
   properties:
     _hiddenInIndex:
       defaultValue: true
+    # Set default targetMode of Folder to "noTarget".
+    targetMode:
+      defaultValue: 'noTarget'
+      ui:
+        inspector:
+          editorOptions:
+            values:
+              # Add an option to have "no target" for the ShortCut NodeType
+              noTarget:
+                label: i18n

@@ -22,10 +22,11 @@ final class UriPathCollisionDetected extends \DomainException
         $message = $first === null
             ? 'URI path collision detected.'
             : sprintf(
-                'URI path "%s" would collide with node %s in dimension %s.',
+                'URI path "%s" would collide with node %s%s in dimension %s.',
                 $first->uriPath,
                 $first->otherNodeAggregateId->value,
-                $first->dimensionSpacePointHash,
+                $first->otherNodeLabel !== null ? ' ("' . $first->otherNodeLabel . '")' : '',
+                $first->dimensionSpacePoint->toJson(),
             );
         parent::__construct($message, 1747000001);
     }

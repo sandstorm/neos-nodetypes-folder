@@ -5,6 +5,9 @@
             <trans-unit id="ui.label" xml:space="preserve">
                 <source>Folder</source>
             </trans-unit>
+            <trans-unit id="properties.targetMode.selectBoxEditor.values.noTarget" xml:space="preserve">
+                <source>No target</source>
+            </trans-unit>
         </body>
     </file>
 </xliff>

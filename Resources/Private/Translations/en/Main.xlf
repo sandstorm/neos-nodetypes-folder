@@ -11,6 +11,9 @@
             <trans-unit id="uriCollision.collision.many" xml:space="preserve">
                 <source>This URL would collide with {count} other nodes.</source>
             </trans-unit>
+            <trans-unit id="shortcut.noTarget">
+                <source>This page only serves as a folder and has no shortcut target.</source>
+            </trans-unit>
         </body>
     </file>
 </xliff>
