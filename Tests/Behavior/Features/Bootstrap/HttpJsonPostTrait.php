@@ -85,4 +85,19 @@ trait HttpJsonPostTrait
             'Response body was: ' . $this->lastResponseBody,
         );
     }
+
+    /**
+     * Verifies that the first element of the "conflicts" array in the response
+     * JSON contains the given key — used to assert the collision response shape.
+     *
+     * @Then the first conflict in the response JSON should contain key :key
+     */
+    public function theFirstConflictInResponseJsonShouldContainKey(string $key): void
+    {
+        Assert::assertNotNull($this->lastResponseBody, 'No HTTP response captured');
+        $actual = json_decode($this->lastResponseBody, true, 512, JSON_THROW_ON_ERROR);
+        Assert::assertArrayHasKey('conflicts', $actual, 'Response body was: ' . $this->lastResponseBody);
+        Assert::assertNotEmpty($actual['conflicts'], 'conflicts array is empty; response body was: ' . $this->lastResponseBody);
+        Assert::assertArrayHasKey($key, $actual['conflicts'][0], 'First conflict is missing key "' . $key . '"; response body was: ' . $this->lastResponseBody);
+    }
 }
