@@ -105,6 +105,7 @@ final class UriCollisionController extends ActionController
         if ($hide !== null && $selfId !== null) {
             $collisions = $collisions->merge($this->uriCollisionCheck->checkHideToggle(
                 $contentRepositoryId,
+                $workspaceName,
                 $selfId,
                 $hide,
             ));
@@ -118,10 +119,12 @@ final class UriCollisionController extends ActionController
             'ok' => false,
             'conflicts' => array_map(
                 static fn(Collision $c): array => [
-                    'dimensionSpacePointHash' => $c->dimensionSpacePointHash,
+                    'dimensionSpacePointHash' => $c->dimensionSpacePoint->hash,
+                    'dimensionSpacePoint' => $c->dimensionSpacePoint->coordinates,
                     'uriPath' => $c->uriPath,
                     'otherNodeAggregateId' => $c->otherNodeAggregateId->value,
                     'otherNodeTypeName' => $c->otherNodeTypeName,
+                    'otherNodeLabel' => $c->otherNodeLabel,
                 ],
                 iterator_to_array($collisions),
             ),

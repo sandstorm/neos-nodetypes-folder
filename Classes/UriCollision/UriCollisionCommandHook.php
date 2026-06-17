@@ -115,6 +115,7 @@ final readonly class UriCollisionCommandHook implements CommandHookInterface
         if ($hideChanged) {
             $collisions = $collisions->merge($this->uriCollisionCheck->checkHideToggle(
                 $this->contentRepositoryId,
+                $command->workspaceName,
                 $command->nodeAggregateId,
                 (bool)$values['hideSegmentInUriPath'],
             ));
@@ -131,6 +132,7 @@ final readonly class UriCollisionCommandHook implements CommandHookInterface
         }
         return $this->uriCollisionCheck->checkMove(
             $this->contentRepositoryId,
+            $command->workspaceName,
             $command->nodeAggregateId,
             $command->newParentNodeAggregateId,
             $command->dimensionSpacePoint,
@@ -141,6 +143,7 @@ final readonly class UriCollisionCommandHook implements CommandHookInterface
     {
         return $this->uriCollisionCheck->checkVariant(
             $this->contentRepositoryId,
+            $command->workspaceName,
             $command->nodeAggregateId,
             $command->sourceOrigin,
             $command->targetOrigin,

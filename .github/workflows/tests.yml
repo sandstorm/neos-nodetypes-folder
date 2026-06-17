@@ -107,6 +107,10 @@ jobs:
         working-directory: distribution
         run: ./flow doctrine:migrate --quiet
 
+      - name: Run unit tests
+        working-directory: distribution
+        run: bin/phpunit -c Packages/Plugins/Sandstorm.NodeTypes.Folder/phpunit.xml.dist
+
       - name: Run Behat tests
         working-directory: distribution
         run: bin/behat -c Packages/Plugins/Sandstorm.NodeTypes.Folder/Tests/Behavior/behat.yml.dist

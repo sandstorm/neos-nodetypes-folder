@@ -7,6 +7,7 @@ namespace Sandstorm\NodeTypes\Folder\UriCollision;
 use Doctrine\DBAL\Connection;
 use Neos\ContentRepository\Core\DimensionSpace\DimensionSpacePoint;
 use Neos\ContentRepository\Core\DimensionSpace\OriginDimensionSpacePoint;
+use Neos\ContentRepository\Core\Projection\ContentGraph\VisibilityConstraints;
 use Neos\ContentRepository\Core\SharedModel\ContentRepository\ContentRepositoryId;
 use Neos\ContentRepository\Core\SharedModel\Node\NodeAggregateId;
 use Neos\ContentRepository\Core\SharedModel\Workspace\WorkspaceName;
@@ -52,7 +53,7 @@ final readonly class UriCollisionCheck
         bool $candidateHideSegmentInUriPath,
         OriginDimensionSpacePoint $originDimensionSpacePoint,
     ): CollisionList {
-        unset($workspaceName, $candidateHideSegmentInUriPath);
+        unset($candidateHideSegmentInUriPath);
         // workspaceName is part of the contract for Defense B; the
         // DocumentUriPath projection is currently single-workspace per CR.
         // The candidate's own hide flag does not affect its own row's uriPath
@@ -78,7 +79,7 @@ final readonly class UriCollisionCheck
             }
             $candidateUriPath = $folderLogic->buildChildUriPath($candidateUriPathSegment, $parent, $dsp);
             $collisions = $collisions->merge(
-                $this->queryCollisions($tableNamePrefix . '_uri', $dsp->hash, $candidateUriPath, $selfId),
+                $this->queryCollisions($tableNamePrefix . '_uri', $dsp, $candidateUriPath, $selfId, $contentRepositoryId, $workspaceName),
             );
         }
 
@@ -92,6 +93,7 @@ final readonly class UriCollisionCheck
      */
     public function checkHideToggle(
         ContentRepositoryId $contentRepositoryId,
+        WorkspaceName $workspaceName,
         NodeAggregateId $folderId,
         bool $newHide,
     ): CollisionList {
@@ -155,9 +157,11 @@ final readonly class UriCollisionCheck
                 $collisions = $collisions->merge(
                     $this->queryCollisions(
                         $tableName,
-                        $dsp->hash,
+                        $dsp,
                         $newPath,
                         NodeAggregateId::fromString($row['nodeAggregateId']),
+                        $contentRepositoryId,
+                        $workspaceName,
                     ),
                 );
             }
@@ -177,6 +181,7 @@ final readonly class UriCollisionCheck
      */
     public function checkMove(
         ContentRepositoryId $contentRepositoryId,
+        WorkspaceName $workspaceName,
         NodeAggregateId $nodeAggregateId,
         NodeAggregateId $newParentId,
         DimensionSpacePoint $dimensionSpacePoint,
@@ -202,7 +207,7 @@ final readonly class UriCollisionCheck
             }
             $candidateUriPath = $folderLogic->buildChildUriPath($segment, $newParent, $dsp);
             $collisions = $collisions->merge(
-                $this->queryCollisions($tableNamePrefix . '_uri', $dsp->hash, $candidateUriPath, $nodeAggregateId),
+                $this->queryCollisions($tableNamePrefix . '_uri', $dsp, $candidateUriPath, $nodeAggregateId, $contentRepositoryId, $workspaceName),
             );
         }
 
@@ -217,6 +222,7 @@ final readonly class UriCollisionCheck
      */
     public function checkVariant(
         ContentRepositoryId $contentRepositoryId,
+        WorkspaceName $workspaceName,
         NodeAggregateId $nodeAggregateId,
         OriginDimensionSpacePoint $sourceOrigin,
         OriginDimensionSpacePoint $targetOrigin,
@@ -254,7 +260,7 @@ final readonly class UriCollisionCheck
             }
             $candidateUriPath = $folderLogic->buildChildUriPath($segment, $parent, $dsp);
             $collisions = $collisions->merge(
-                $this->queryCollisions($tableNamePrefix . '_uri', $dsp->hash, $candidateUriPath, $nodeAggregateId),
+                $this->queryCollisions($tableNamePrefix . '_uri', $dsp, $candidateUriPath, $nodeAggregateId, $contentRepositoryId, $workspaceName),
             );
         }
 
@@ -263,24 +269,35 @@ final readonly class UriCollisionCheck
 
     private function queryCollisions(
         string $tableName,
-        string $dimensionSpacePointHash,
+        DimensionSpacePoint $dimensionSpacePoint,
         string $candidateUriPath,
         ?NodeAggregateId $selfId,
+        ContentRepositoryId $contentRepositoryId,
+        WorkspaceName $workspaceName,
     ): CollisionList {
         $sql = 'SELECT nodeAggregateId, nodetypename FROM ' . $tableName . '
                 WHERE dimensionSpacePointHash = :dsp AND uriPath = :uri';
-        $params = ['dsp' => $dimensionSpacePointHash, 'uri' => $candidateUriPath];
+        $params = ['dsp' => $dimensionSpacePoint->hash, 'uri' => $candidateUriPath];
         if ($selfId !== null) {
             $sql .= ' AND nodeAggregateId != :selfId';
             $params['selfId'] = $selfId->value;
         }
+
+        $subgraph = $this->contentRepositoryRegistry->get($contentRepositoryId)
+            ->getContentGraph($workspaceName)
+            ->getSubgraph($dimensionSpacePoint, VisibilityConstraints::withoutRestrictions());
+
         $collisions = CollisionList::empty();
         foreach ($this->dbal->fetchAllAssociative($sql, $params) as $row) {
+            $nodeId = NodeAggregateId::fromString($row['nodeAggregateId']);
+            $node = $subgraph->findNodeById($nodeId);
+            $label = $node?->hasProperty('title') ? (string)$node->getProperty('title') : null;
             $collisions = $collisions->with(new Collision(
-                $dimensionSpacePointHash,
+                $dimensionSpacePoint,
                 $candidateUriPath,
-                NodeAggregateId::fromString($row['nodeAggregateId']),
+                $nodeId,
                 (string)$row['nodetypename'],
+                $label,
             ));
         }
         return $collisions;

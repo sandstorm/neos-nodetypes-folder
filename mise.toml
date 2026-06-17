@@ -4,3 +4,7 @@ usage = '''
 arg "[testparams]" var=#true
 '''
 run = 'docker compose exec -e FLOW_CONTEXT=Testing/Behat neos bash -c "cd /app && ./flow doctrine:migrate && bin/behat -c Packages/Plugins/Sandstorm.NodeTypes.Folder/Tests/Behavior/behat.yml.dist ${usage_testparams}"'
+
+[tasks."test:unit"]
+description = "Run unit tests for Sandstorm.NodeTypes.Folder"
+run = 'docker compose exec neos bash -c "cd /app && bin/phpunit -c Packages/Plugins/Sandstorm.NodeTypes.Folder/phpunit.xml.dist"'

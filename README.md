@@ -32,3 +32,11 @@ composer require sandstorm/neos-nodetypes-folder --no-update
 ```
 
 The `--no-update` command prevents other dependencies from being updated. After the package was added to your theme composer.json, go back to the root of the Neos installation and run composer update. The package is now installed correctly.
+
+## Upgrade Instructions 1.0.0 -> 1.0.1
+
+As we introduced a new Projection to catch URI path collisions, you need to set it up in the Content Repository after the package update:
+
+1. setup new Uri Projection `./flow cr:setup`
+2. replay events on that Projection `./flow subscription:replay Neos.Neos:DocumentUriPathProjection`
+3. flush cache to force re-rendering of menu `./flow flow:cache:flush`

@@ -1,0 +1,5 @@
+# For Sandstorm.NodeTypes.Folder:Document.Folder the 'targetNode' property is enhanced with another option: 'noTarget'
+# This Prototype renders the shortcut page - add this case to prevent a fusion exception.
+prototype(Neos.Neos:Shortcut.Link).renderer.noTarget = Neos.Fusion:Value {
+  value = ${I18n.id('shortcut.noTarget').package('Sandstorm.NodeTypes.Folder').source('Main').locale(Neos.Backend.interfaceLanguage()).translate()}
+}

@@ -107,6 +107,11 @@ Feature: Editor-side validator endpoint surfaces collisions before the user save
     """
     Then the response status code should be 409
     And the response JSON should contain key "ok" with value "false"
+    And the first conflict in the response JSON should contain key "dimensionSpacePoint"
+    And the first conflict in the response JSON should contain key "dimensionSpacePointHash"
+    And the first conflict in the response JSON should contain key "uriPath"
+    And the first conflict in the response JSON should contain key "otherNodeAggregateId"
+    And the first conflict in the response JSON should contain key "otherNodeLabel"
 
   Scenario: A rename to a colliding segment returns 409
     When I POST JSON to URL "http://localhost/neos/folder/check-uri-collision":
