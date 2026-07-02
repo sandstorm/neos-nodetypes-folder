@@ -685,9 +685,23 @@ final class DocumentUriPathProjection implements ProjectionInterface
             $removedDelta++;
         }
 
+        // PATCH(Folder): a move may cross into another site; without re-assigning
+        // siteNodeName the moved subtree stays attached to the old site, breaking
+        // cross-domain URL generation and the site-scoped collision check
+        // ({@see UriCollisionCheck::queryCollisions()}). When the new parent IS the
+        // root the node becomes a site node itself — root rows carry no
+        // siteNodeName to inherit, so the existing value is kept.
+        $setSiteNodeNameSql = '';
+        $siteNodeNameParams = [];
+        if (!$newParentNode->isRoot()) {
+            $setSiteNodeNameSql = 'siteNodeName = :newSiteNodeName,';
+            $siteNodeNameParams['newSiteNodeName'] = $newParentNode->getSiteNodeName()->value;
+        }
+
         $this->updateNodeQuery(
             /** @codingStandardsIgnoreStart */
             'SET
+                ' . $setSiteNodeNameSql . '
                 nodeAggregateIdPath = TRIM(TRAILING "/" FROM CONCAT(:newParentNodeAggregateIdPath, "/", TRIM(LEADING "/" FROM SUBSTRING(nodeAggregateIdPath, :sourceNodeAggregateIdPathOffset)))),
                 uriPath = TRIM("/" FROM CONCAT(:newParentUriPath, "/", TRIM(LEADING "/" FROM SUBSTRING(uriPath, :sourceUriPathOffset)))),
                 disabled = disabled + ' . $disabledDelta . ',
@@ -698,7 +712,7 @@ final class DocumentUriPathProjection implements ProjectionInterface
                     OR nodeAggregateIdPath LIKE :childNodeAggregateIdPathPrefix)
             ',
             /** @codingStandardsIgnoreEnd */
-            [
+            $siteNodeNameParams + [
                 'nodeAggregateId' => $node->getNodeAggregateId()->value,
                 'newParentNodeAggregateIdPath' => $newParentNode->getNodeAggregateIdPath(),
                 'sourceNodeAggregateIdPathOffset'

@@ -12,6 +12,7 @@ use Neos\ContentRepository\Core\SharedModel\ContentRepository\ContentRepositoryI
 use Neos\ContentRepository\Core\SharedModel\Node\NodeAggregateId;
 use Neos\ContentRepository\Core\SharedModel\Workspace\WorkspaceName;
 use Neos\ContentRepositoryRegistry\ContentRepositoryRegistry;
+use Neos\Neos\Domain\Model\SiteNodeName;
 use Neos\Neos\FrontendRouting\Exception\NodeNotFoundException;
 use Neos\Neos\FrontendRouting\Projection\DocumentNodeInfo;
 use Neos\Neos\FrontendRouting\Projection\DocumentUriPathFinder;
@@ -79,7 +80,7 @@ final readonly class UriCollisionCheck
             }
             $candidateUriPath = $folderLogic->buildChildUriPath($candidateUriPathSegment, $parent, $dsp);
             $collisions = $collisions->merge(
-                $this->queryCollisions($tableNamePrefix . '_uri', $dsp, $candidateUriPath, $selfId, $contentRepositoryId, $workspaceName),
+                $this->queryCollisions($tableNamePrefix . '_uri', $dsp, $candidateUriPath, $parent->getSiteNodeName(), $selfId, $contentRepositoryId, $workspaceName),
             );
         }
 
@@ -159,6 +160,7 @@ final readonly class UriCollisionCheck
                         $tableName,
                         $dsp,
                         $newPath,
+                        $folderInfo->getSiteNodeName(),
                         NodeAggregateId::fromString($row['nodeAggregateId']),
                         $contentRepositoryId,
                         $workspaceName,
@@ -207,7 +209,7 @@ final readonly class UriCollisionCheck
             }
             $candidateUriPath = $folderLogic->buildChildUriPath($segment, $newParent, $dsp);
             $collisions = $collisions->merge(
-                $this->queryCollisions($tableNamePrefix . '_uri', $dsp, $candidateUriPath, $nodeAggregateId, $contentRepositoryId, $workspaceName),
+                $this->queryCollisions($tableNamePrefix . '_uri', $dsp, $candidateUriPath, $newParent->getSiteNodeName(), $nodeAggregateId, $contentRepositoryId, $workspaceName),
             );
         }
 
@@ -260,7 +262,7 @@ final readonly class UriCollisionCheck
             }
             $candidateUriPath = $folderLogic->buildChildUriPath($segment, $parent, $dsp);
             $collisions = $collisions->merge(
-                $this->queryCollisions($tableNamePrefix . '_uri', $dsp, $candidateUriPath, $nodeAggregateId, $contentRepositoryId, $workspaceName),
+                $this->queryCollisions($tableNamePrefix . '_uri', $dsp, $candidateUriPath, $parent->getSiteNodeName(), $nodeAggregateId, $contentRepositoryId, $workspaceName),
             );
         }
 
@@ -271,13 +273,17 @@ final readonly class UriCollisionCheck
         string $tableName,
         DimensionSpacePoint $dimensionSpacePoint,
         string $candidateUriPath,
+        SiteNodeName $siteNodeName,
         ?NodeAggregateId $selfId,
         ContentRepositoryId $contentRepositoryId,
         WorkspaceName $workspaceName,
     ): CollisionList {
+        // uriPaths are site-relative: the same path on two different sites is
+        // legal (the router disambiguates via the request's site), so only
+        // rows of the candidate's own site can collide.
         $sql = 'SELECT nodeAggregateId, nodetypename FROM ' . $tableName . '
-                WHERE dimensionSpacePointHash = :dsp AND uriPath = :uri';
-        $params = ['dsp' => $dimensionSpacePoint->hash, 'uri' => $candidateUriPath];
+                WHERE dimensionSpacePointHash = :dsp AND uriPath = :uri AND siteNodeName = :site';
+        $params = ['dsp' => $dimensionSpacePoint->hash, 'uri' => $candidateUriPath, 'site' => $siteNodeName->value];
         if ($selfId !== null) {
             $sql .= ' AND nodeAggregateId != :selfId';
             $params['selfId'] = $selfId->value;
