@@ -71,6 +71,13 @@ jobs:
           composer require --no-update --dev \
             neos/behat:"~9.0.0" \
             neos/contentrepository-testsuite:"^9.1"
+          # Pin neos/neos to the last known-good patch: 9.1.7+ hits a PHP
+          # fatal (property-staticness redeclaration between neos/flow's and
+          # neos/neos's own ConfigurationValidationTest, both loaded via
+          # Flow's registerFunctionalTestClasses) during ./flow doctrine:migrate.
+          # See https://github.com/NEOSidekick/NEOSidekick.AiAssistant/pull/33
+          # for another package hitting the same upstream regression.
+          composer require --no-update neos/neos:"9.1.6"
 
       - name: Install dependencies
         working-directory: distribution
