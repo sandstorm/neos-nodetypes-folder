@@ -99,6 +99,67 @@ Feature: Creating a node whose URL would collide with an existing node is reject
     And I am on URL "/"
     Then the node "new-child" in dimension "{}" should resolve to URL "/unique"
 
+  Scenario: Creating a node with no folder involved at all, whose prior collision has first been removed, succeeds
+    # No transparent folder anywhere in this scenario -- sibling-of-folder is a
+    # plain top-level page, and the re-created node is placed as its plain
+    # sibling too. Rules out folder-transparency logic as the cause if this
+    # still fails: this exercises only the generic remove -> recreate path.
+    When the command RemoveNodeAggregate is executed with payload:
+      | Key                          | Value               |
+      | nodeAggregateId              | "sibling-of-folder" |
+      | coveredDimensionSpacePoint   | {}                  |
+      | nodeVariantSelectionStrategy | "allVariants"       |
+    And the command CreateNodeAggregateWithNode is executed with payload:
+      | Key                       | Value                          |
+      | nodeAggregateId           | "new-sibling"                  |
+      | parentNodeAggregateId     | "site-of-folders"              |
+      | nodeTypeName              | "Neos.Neos:Test.Routing.Page"  |
+      | originDimensionSpacePoint | {}                             |
+      | initialPropertyValues     | {"uriPathSegment": "sibling"}  |
+    And I am on URL "/"
+    Then the node "new-sibling" in dimension "{}" should resolve to URL "/sibling"
+
+  Scenario: Creating a node with a segment whose prior collision has been soft-deleted (trashed) succeeds
+    # This is what the Neos UI's "Delete" action actually does -- it never
+    # issues RemoveNodeAggregate, only TagSubtree with NeosSubtreeTag::removed()
+    # (see Neos.Neos.Ui's Remove change), leaving the row in place with
+    # removed=1 so it can be restored from the Recycle Bin. Reproduces the
+    # production bug: a trashed page must not permanently block its own
+    # uriPathSegment from being reused.
+    When the command TagSubtree is executed with payload:
+      | Key                          | Value               |
+      | nodeAggregateId              | "sibling-of-folder" |
+      | coveredDimensionSpacePoint   | {}                  |
+      | nodeVariantSelectionStrategy | "allSpecializations" |
+      | tag                          | "removed"           |
+    And the command CreateNodeAggregateWithNode is executed with payload:
+      | Key                       | Value                          |
+      | nodeAggregateId           | "new-sibling"                  |
+      | parentNodeAggregateId     | "site-of-folders"              |
+      | nodeTypeName              | "Neos.Neos:Test.Routing.Page"  |
+      | originDimensionSpacePoint | {}                             |
+      | initialPropertyValues     | {"uriPathSegment": "sibling"}  |
+    And I am on URL "/"
+    Then the node "new-sibling" in dimension "{}" should resolve to URL "/sibling"
+
+  Scenario: Creating a node with a segment whose prior collision has first been removed succeeds
+    # sibling-of-folder occupies "sibling"; once it is removed, a new node under
+    # folder-a can take that segment without colliding.
+    When the command RemoveNodeAggregate is executed with payload:
+      | Key                          | Value               |
+      | nodeAggregateId              | "sibling-of-folder" |
+      | coveredDimensionSpacePoint   | {}                  |
+      | nodeVariantSelectionStrategy | "allVariants"       |
+    And the command CreateNodeAggregateWithNode is executed with payload:
+      | Key                       | Value                          |
+      | nodeAggregateId           | "new-child"                    |
+      | parentNodeAggregateId     | "folder-a"                     |
+      | nodeTypeName              | "Neos.Neos:Test.Routing.Page"  |
+      | originDimensionSpacePoint | {}                             |
+      | initialPropertyValues     | {"uriPathSegment": "sibling"}  |
+    And I am on URL "/"
+    Then the node "new-child" in dimension "{}" should resolve to URL "/sibling"
+
   Scenario: Same create succeeds when the folder is opaque (segment lives in distinct URL space)
     Given the command SetNodeProperties is executed with payload:
       | Key                       | Value                            |

@@ -122,6 +122,7 @@ final class UriCollisionController extends ActionController
                     'dimensionSpacePointHash' => $c->dimensionSpacePoint->hash,
                     'dimensionSpacePoint' => $c->dimensionSpacePoint->coordinates,
                     'uriPath' => $c->uriPath,
+                    'siteNodeName' => $c->siteNodeName->value,
                     'otherNodeAggregateId' => $c->otherNodeAggregateId->value,
                     'otherNodeTypeName' => $c->otherNodeTypeName,
                     'otherNodeLabel' => $c->otherNodeLabel,

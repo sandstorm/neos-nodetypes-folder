@@ -281,8 +281,15 @@ final readonly class UriCollisionCheck
         // uriPaths are site-relative: the same path on two different sites is
         // legal (the router disambiguates via the request's site), so only
         // rows of the candidate's own site can collide.
+        // Excludes `removed = 1` rows: the Neos UI's "Delete" action never
+        // issues RemoveNodeAggregate (hard delete) -- it tags the subtree as
+        // removed (soft delete/trash, see Neos.Neos.Ui's Remove change and
+        // {@see NeosSubtreeTag::removed()}), which leaves the row in place.
+        // Without this filter, a trashed page permanently blocks its own
+        // uriPathSegment from ever being reused.
         $sql = 'SELECT nodeAggregateId, nodetypename FROM ' . $tableName . '
-                WHERE dimensionSpacePointHash = :dsp AND uriPath = :uri AND siteNodeName = :site';
+                WHERE dimensionSpacePointHash = :dsp AND uriPath = :uri AND siteNodeName = :site
+                AND removed = 0';
         $params = ['dsp' => $dimensionSpacePoint->hash, 'uri' => $candidateUriPath, 'site' => $siteNodeName->value];
         if ($selfId !== null) {
             $sql .= ' AND nodeAggregateId != :selfId';
@@ -301,6 +308,7 @@ final readonly class UriCollisionCheck
             $collisions = $collisions->with(new Collision(
                 $dimensionSpacePoint,
                 $candidateUriPath,
+                $siteNodeName,
                 $nodeId,
                 (string)$row['nodetypename'],
                 $label,
