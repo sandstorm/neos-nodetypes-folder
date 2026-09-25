@@ -6,6 +6,10 @@
                 <source>Hide URL path segment</source>
                 <target xml:lang="de">URL-Pfadsegment verbergen</target>
             </trans-unit>
+            <trans-unit id="properties.hideSegmentInUriPath.ui.help.message" xml:space="preserve">
+                <source>Turn on to leave this folder's name out of the URLs of the pages inside it.</source>
+                <target xml:lang="de">Aktivieren, damit der Name dieses Ordners nicht in den URLs der enthaltenen Seiten erscheint.</target>
+            </trans-unit>
         </body>
     </file>
 </xliff>
