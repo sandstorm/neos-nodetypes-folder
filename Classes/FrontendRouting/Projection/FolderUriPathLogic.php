@@ -19,6 +19,11 @@ use Neos\Neos\FrontendRouting\Projection\DocumentUriPathFinder;
  */
 final class FolderUriPathLogic
 {
+    /**
+     * The Folder NodeType's default `targetMode` (see NodeTypes.Document.Folder.yaml).
+     */
+    public const SHORTCUT_MODE_NO_TARGET = 'noTarget';
+
     public function __construct(
         private readonly DocumentUriPathFinder $documentUriPathFinder,
         private readonly Connection $dbal,
@@ -89,6 +94,28 @@ final class FolderUriPathLogic
     public function isTransparentFolder(DocumentNodeInfo $node): bool
     {
         return (bool)($node->toArray()['hideurisegment'] ?? false);
+    }
+
+    /**
+     * A transparent `noTarget` folder's own uriPath answers with 404 (see
+     * {@see \Sandstorm\NodeTypes\Folder\Aspect\NodeControllerAspect}), so it
+     * is never a URL anyone can reach — two such rows sharing a uriPath are
+     * harmless (e.g. `news/2025/09` and `news/2026/09` under hidden years).
+     */
+    public function isUnroutableFolder(DocumentNodeInfo $node): bool
+    {
+        return $this->isTransparentFolder($node)
+            && $node->isShortcut()
+            && $node->getShortcutMode() === self::SHORTCUT_MODE_NO_TARGET;
+    }
+
+    /**
+     * Same rule as {@see self::isUnroutableFolder()} for a node that has no
+     * projection row yet (or whose row is about to change).
+     */
+    public static function isUnroutableFolderFor(bool $hideSegmentInUriPath, ?string $targetMode): bool
+    {
+        return $hideSegmentInUriPath && $targetMode === self::SHORTCUT_MODE_NO_TARGET;
     }
 
     /**
