@@ -15,7 +15,23 @@
 | [breadlesscode/neos-nodetypes-folder](https://github.com/breadlesscode/neos-nodetypes-folder) | < 9.0        |
 | [sandstorm/neos-nodetypes-folder](https://github.com/sandstorm/neos-nodetypes-folder)         | >= 9.0       |
 
-This Neos Plugin contains a folder node type. This folder **isn't rendered in the URI** by default.
+This Neos Plugin contains a folder node type. By default, a folder **is rendered in the URI** like any other page.
+Editors can hide it per folder with the "Hide URL path segment" toggle in the General tab of the inspector.
+
+### Hiding the URL path segment by default
+
+To hide the URL path segment of new folders by default, override the NodeType default in your site package
+(it must `require` `sandstorm/neos-nodetypes-folder`, see [Installation](#installation), so that your override is loaded last):
+
+```yaml
+# Packages/Sites/Your.Site/NodeTypes/Override/Folder.yaml
+'Sandstorm.NodeTypes.Folder:Mixin.HideUriSegment':
+  properties:
+    hideSegmentInUriPath:
+      defaultValue: true
+```
+
+This only affects newly created folders — existing folders keep their stored value.
 
 The main idea and code is from [@sebobo](https://gist.github.com/Sebobo) from [this Gist](https://gist.github.com/Sebobo/7b12f8e46778321f7b1b02d4b9aaad85). Thanks for that!!!
 
@@ -32,6 +48,14 @@ composer require sandstorm/neos-nodetypes-folder --no-update
 ```
 
 The `--no-update` command prevents other dependencies from being updated. After the package was added to your theme composer.json, go back to the root of the Neos installation and run composer update. The package is now installed correctly.
+
+## Upgrade Instructions 1.x -> 2.0.0
+
+**Breaking:** New folders now **show** their URL path segment by default (`hideSegmentInUriPath` defaults to `false`;
+before, it defaulted to `true`). Existing folders keep their stored value, so their URLs don't change.
+
+To keep the previous behavior for newly created folders, add the NodeType override from
+[Hiding the URL path segment by default](#hiding-the-url-path-segment-by-default) to your site package.
 
 ## Upgrade Instructions 1.0.0 -> 1.0.1
 
