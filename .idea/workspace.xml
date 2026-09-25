@@ -1,0 +1,102 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project version="4">
+  <component name="AutoImportSettings">
+    <option name="autoReloadType" value="SELECTIVE" />
+  </component>
+  <component name="ChangeListManager">
+    <list default="true" id="5a14c242-c50b-4864-92ff-6c4331ad4bf4" name="Changes" comment="📝 TASK: add docs for the URI collision hidden folders fix" />
+    <option name="SHOW_DIALOG" value="false" />
+    <option name="HIGHLIGHT_CONFLICTS" value="true" />
+    <option name="HIGHLIGHT_NON_ACTIVE_CHANGELIST" value="false" />
+    <option name="LAST_RESOLUTION" value="IGNORE" />
+  </component>
+  <component name="ChangesViewManager">
+    <option name="groupingKeys">
+      <option value="directory" />
+      <option value="repository" />
+    </option>
+  </component>
+  <component name="ComposerSettings" synchronizationState="SYNCHRONIZE">
+    <pharConfigPath>$PROJECT_DIR$/composer.json</pharConfigPath>
+    <execution>
+      <execution />
+    </execution>
+  </component>
+  <component name="Git.Settings">
+    <option name="RECENT_GIT_ROOT_PATH" value="$PROJECT_DIR$" />
+  </component>
+  <component name="PhpWorkspaceProjectConfiguration" interpreter_name="/opt/homebrew/Cellar/php/8.2.10/bin/php" />
+  <component name="ProjectColorInfo"><![CDATA[{
+  "associatedIndex": 3,
+  "fromUser": false
+}]]></component>
+  <component name="ProjectId" id="3JpSaCFzXkwffMm9ImpNqgB49UH" />
+  <component name="ProjectViewState">
+    <option name="hideEmptyMiddlePackages" value="true" />
+    <option name="showLibraryContents" value="true" />
+  </component>
+  <component name="PropertiesComponent"><![CDATA[{
+  "keyToString": {
+    "ModuleVcsDetector.initialDetectionPerformed": "true",
+    "RunOnceActivity.ShowReadmeOnStart": "true",
+    "RunOnceActivity.git.unshallow": "true",
+    "RunOnceActivity.typescript.service.memoryLimit.init": "true",
+    "codeWithMe.voiceChat.enabledByDefault": "false",
+    "com.github.patou.gitmoji.migration-offered": "true",
+    "git-widget-placeholder": "feature/hide-uri-segment-editor-ux",
+    "node.js.detected.package.eslint": "true",
+    "node.js.detected.package.tslint": "true",
+    "node.js.selected.package.eslint": "(autodetect)",
+    "node.js.selected.package.tslint": "(autodetect)",
+    "nodejs_package_manager_path": "npm",
+    "project.structure.last.edited": "Modules",
+    "project.structure.proportion": "0.0",
+    "project.structure.side.proportion": "0.0",
+    "settings.editor.selected.configurable": "preferences.pluginManager"
+  }
+}]]></component>
+  <component name="RunManager">
+    <configuration default="true" type="ComposerRunConfigurationType" factoryName="Composer Script">
+      <option name="pathToComposerJson" value="$PROJECT_DIR$/composer.json" />
+      <method v="2" />
+    </configuration>
+  </component>
+  <component name="SharedIndexes">
+    <attachedChunks>
+      <set>
+        <option value="bundled-jdk-30f59d01ecdd-a203e0a19954-intellij.indexing.shared.core-IU-262.10968.63" />
+        <option value="bundled-js-predefined-d6986cc7102b-4abd2a77f808-JavaScript-IU-262.10968.63" />
+      </set>
+    </attachedChunks>
+  </component>
+  <component name="TaskManager">
+    <task active="true" id="Default" summary="Default task">
+      <changelist id="5a14c242-c50b-4864-92ff-6c4331ad4bf4" name="Changes" comment="" />
+      <created>1790356577185</created>
+      <option name="number" value="Default" />
+      <option name="presentableId" value="Default" />
+      <updated>1790356577185</updated>
+    </task>
+    <servers />
+  </component>
+  <component name="TypeScriptGeneratedFilesManager">
+    <option name="version" value="3" />
+  </component>
+  <component name="Vcs.Log.Tabs.Properties">
+    <option name="TAB_STATES">
+      <map>
+        <entry key="MAIN">
+          <value>
+            <State />
+          </value>
+        </entry>
+      </map>
+    </option>
+  </component>
+  <component name="VcsManagerConfiguration">
+    <MESSAGE value=" TASK: add .gitignore and .idea folder" />
+    <MESSAGE value=" Fix URI collision checks for hidden folders and unpublished siblings&#10;&#10;Hidden year/month folders (news/2025/09, news/2026/09) were rejected as colliding: a transparent folder's own row still stores parent_prefix/segment, so both rows hold &quot;news/09&quot;. That URL is unreachable anyway, because a noTarget folder answers with 404. Meanwhile, two unpublished siblings with the same segment were accepted, because the check only queried the live-only DocumentUriPath projection.&#10;&#10;Rules now:&#10;- Two hidden noTarget folders under different parents may share a uriPath (FolderUriPathLogic::isUnroutableFolder()). Anything reachable still collides: a page vs. a folder, or a folder that redirects (firstChildNode/selectedTarget).&#10;- Siblings always collide. UriCollisionCheck::checkSiblings() queries the parent's document children in the command's workspace via the content graph, so unpublished nodes are covered too.&#10;&#10;Details:&#10;- UriCollisionCheck applies the folder rule on create, rename, hide toggle, move and variant. The unused $candidateHideSegmentInUriPath parameter becomes $candidateIsUnroutableFolder.&#10;- The command hook merges NodeType defaults on create. The hook runs before the CR merges them, and the Neos UI sends neither hideSegmentInUriPath nor targetMode.&#10;- Changing targetMode re-checks the folder's own uriPath, since leaving noTarget makes it reachable.&#10;- The hook and the Inspector endpoint share isUnroutableFolderAfterChange(), which reads from the command's workspace and dimension, so unpublished folders are judged correctly.&#10;- CollisionList dedupes conflicts per dimension and node.&#10;- New Collision_UnroutableFolders.feature (12 scenarios) and Collision_Workspace.feature (7 scenarios)" />
+    <MESSAGE value=" TASK: add docs for the URI collision hidden folders fix" />
+    <option name="LAST_COMMIT_MESSAGE" value=" TASK: add docs for the URI collision hidden folders fix" />
+  </component>
+</project>
