@@ -145,6 +145,38 @@ Feature: Siblings must not share a uriPathSegment, even before publishing
       | originDimensionSpacePoint | {}                                           |
       | initialPropertyValues     | {"uriPathSegment": "09"}                     |
 
+  Scenario: Letting an unpublished hidden folder redirect while a live folder shares its URL is rejected
+    # m2026-09 has no projection row yet; leaving noTarget still makes /news/09
+    # reachable and ambiguous with m2025-09 once published.
+    Given the command CreateNodeAggregateWithNode is executed with payload:
+      | Key                       | Value                                        |
+      | nodeAggregateId           | "m2026-09"                                   |
+      | parentNodeAggregateId     | "y2026"                                      |
+      | nodeTypeName              | "Sandstorm.NodeTypes.Folder:Document.Folder" |
+      | originDimensionSpacePoint | {}                                           |
+      | initialPropertyValues     | {"uriPathSegment": "09"}                     |
+    When the command SetNodeProperties is executed with payload and exceptions are caught:
+      | Key                       | Value                            |
+      | nodeAggregateId           | "m2026-09"                       |
+      | originDimensionSpacePoint | {}                               |
+      | propertyValues            | {"targetMode": "firstChildNode"} |
+    Then the last command should have thrown an exception of type "UriPathCollisionDetected"
+
+  Scenario: Renaming an unpublished hidden folder onto a live folder's URL while letting it redirect is rejected
+    Given the command CreateNodeAggregateWithNode is executed with payload:
+      | Key                       | Value                                        |
+      | nodeAggregateId           | "m2026-10"                                   |
+      | parentNodeAggregateId     | "y2026"                                      |
+      | nodeTypeName              | "Sandstorm.NodeTypes.Folder:Document.Folder" |
+      | originDimensionSpacePoint | {}                                           |
+      | initialPropertyValues     | {"uriPathSegment": "10"}                     |
+    When the command SetNodeProperties is executed with payload and exceptions are caught:
+      | Key                       | Value                                                    |
+      | nodeAggregateId           | "m2026-10"                                               |
+      | originDimensionSpacePoint | {}                                                       |
+      | propertyValues            | {"uriPathSegment": "09", "targetMode": "firstChildNode"} |
+    Then the last command should have thrown an exception of type "UriPathCollisionDetected"
+
   Scenario: Renaming an unpublished folder to an unpublished sibling's segment is rejected
     Given the command CreateNodeAggregateWithNode is executed with payload:
       | Key                       | Value                                        |
