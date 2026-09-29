@@ -5,6 +5,9 @@
             <trans-unit id="properties.hideSegmentInUriPath" xml:space="preserve">
                 <source>Hide URL path segment</source>
             </trans-unit>
+            <trans-unit id="properties.hideSegmentInUriPath.ui.help.message" xml:space="preserve">
+                <source>Turn on to leave this folder's name out of the URLs of the pages inside it.</source>
+            </trans-unit>
         </body>
     </file>
 </xliff>
