@@ -7,12 +7,19 @@ namespace Sandstorm\NodeTypes\Folder\UriCollision;
 use Doctrine\DBAL\Connection;
 use Neos\ContentRepository\Core\DimensionSpace\DimensionSpacePoint;
 use Neos\ContentRepository\Core\DimensionSpace\OriginDimensionSpacePoint;
+use Neos\ContentRepository\Core\Feature\SubtreeTagging\Dto\SubtreeTags;
+use Neos\ContentRepository\Core\Projection\ContentGraph\Filter\FindAncestorNodesFilter;
+use Neos\ContentRepository\Core\Projection\ContentGraph\Filter\FindChildNodesFilter;
+use Neos\ContentRepository\Core\Projection\ContentGraph\Filter\PropertyValue\Criteria\PropertyValueEquals;
 use Neos\ContentRepository\Core\Projection\ContentGraph\VisibilityConstraints;
 use Neos\ContentRepository\Core\SharedModel\ContentRepository\ContentRepositoryId;
 use Neos\ContentRepository\Core\SharedModel\Node\NodeAggregateId;
+use Neos\ContentRepository\Core\SharedModel\Node\PropertyName;
 use Neos\ContentRepository\Core\SharedModel\Workspace\WorkspaceName;
 use Neos\ContentRepositoryRegistry\ContentRepositoryRegistry;
 use Neos\Neos\Domain\Model\SiteNodeName;
+use Neos\Neos\Domain\Service\NodeTypeNameFactory;
+use Neos\Neos\Domain\SubtreeTagging\NeosSubtreeTag;
 use Neos\Neos\FrontendRouting\Exception\NodeNotFoundException;
 use Neos\Neos\FrontendRouting\Projection\DocumentNodeInfo;
 use Neos\Neos\FrontendRouting\Projection\DocumentUriPathFinder;
@@ -44,6 +51,10 @@ final readonly class UriCollisionCheck
      *  matches. For brand-new nodes pass the prospective id (already chosen
      *  by the time the command is built); pass null only if it is not yet
      *  known (no row in projection to ignore).
+     * @param bool $candidateIsUnroutableFolder Whether the candidate is a
+     *  transparent `noTarget` folder, see {@see FolderUriPathLogic::isUnroutableFolder()}.
+     *  Its own row always stores parent_prefix/segment regardless of the hide
+     *  flag; the flag's effect on descendants is handled via checkHideToggle().
      */
     public function check(
         ContentRepositoryId $contentRepositoryId,
@@ -51,15 +62,11 @@ final readonly class UriCollisionCheck
         ?NodeAggregateId $selfId,
         NodeAggregateId $parentId,
         string $candidateUriPathSegment,
-        bool $candidateHideSegmentInUriPath,
+        bool $candidateIsUnroutableFolder,
         OriginDimensionSpacePoint $originDimensionSpacePoint,
     ): CollisionList {
-        unset($candidateHideSegmentInUriPath);
         // workspaceName is part of the contract for Defense B; the
         // DocumentUriPath projection is currently single-workspace per CR.
-        // The candidate's own hide flag does not affect its own row's uriPath
-        // (the row always stores parent_prefix/segment) — but it does affect
-        // its descendants, handled separately via checkHideToggle().
 
         $contentRepository = $this->contentRepositoryRegistry->get($contentRepositoryId);
         $finder = $contentRepository->projectionState(DocumentUriPathFinder::class);
@@ -80,11 +87,123 @@ final readonly class UriCollisionCheck
             }
             $candidateUriPath = $folderLogic->buildChildUriPath($candidateUriPathSegment, $parent, $dsp);
             $collisions = $collisions->merge(
-                $this->queryCollisions($tableNamePrefix . '_uri', $dsp, $candidateUriPath, $parent->getSiteNodeName(), $selfId, $contentRepositoryId, $workspaceName),
+                $this->queryCollisions($tableNamePrefix . '_uri', $dsp, $candidateUriPath, $parent->getSiteNodeName(), $selfId, $contentRepositoryId, $workspaceName, $folderLogic, $candidateIsUnroutableFolder ? $parentId : null),
             );
         }
 
         return $collisions;
+    }
+
+    /**
+     * Reject a uriPathSegment that a document sibling under the same parent
+     * already uses — checked in the command's workspace via the content graph.
+     *
+     * The projection-based checks only see live (the DocumentUriPath
+     * projection ignores all other workspaces), so without this two
+     * unpublished siblings could share a segment until one of them is
+     * published. Siblings always collide; the unroutable-folder exception
+     * of {@see self::queryCollisions()} does not apply.
+     */
+    public function checkSiblings(
+        ContentRepositoryId $contentRepositoryId,
+        WorkspaceName $workspaceName,
+        ?NodeAggregateId $selfId,
+        NodeAggregateId $parentId,
+        string $candidateUriPathSegment,
+        DimensionSpacePoint $dimensionSpacePoint,
+    ): CollisionList {
+        $contentRepository = $this->contentRepositoryRegistry->get($contentRepositoryId);
+        $contentGraph = $contentRepository->getContentGraph($workspaceName);
+        $finder = $contentRepository->projectionState(DocumentUriPathFinder::class);
+        $folderLogic = new FolderUriPathLogic(
+            $finder,
+            $this->dbal,
+            DocumentUriPathProjectionFactory::projectionTableNamePrefix($contentRepositoryId),
+        );
+        // Like `removed = 0` in queryCollisions(): trashed siblings free their segment.
+        $visibilityConstraints = VisibilityConstraints::excludeSubtreeTags(SubtreeTags::create(NeosSubtreeTag::removed()));
+        $filter = FindChildNodesFilter::create(
+            nodeTypes: NodeTypeNameFactory::NAME_DOCUMENT,
+            propertyValue: PropertyValueEquals::create(PropertyName::fromString('uriPathSegment'), $candidateUriPathSegment, true),
+        );
+
+        $collisions = CollisionList::empty();
+        foreach ($contentRepository->getVariationGraph()->getSpecializationSet($dimensionSpacePoint, true) as $dsp) {
+            $subgraph = $contentGraph->getSubgraph($dsp, $visibilityConstraints);
+            $siblings = $subgraph->findChildNodes($parentId, $filter);
+            if ($siblings->isEmpty()) {
+                continue;
+            }
+            // The site is the ancestor directly below the Neos.Neos:Sites root.
+            $chain = array_values(array_filter([
+                $subgraph->findNodeById($parentId),
+                ...$subgraph->findAncestorNodes($parentId, FindAncestorNodesFilter::create()),
+            ]));
+            // Children of the root are site nodes, whose segments never appear in URLs.
+            $siteNodeName = ($chain[count($chain) - 2] ?? null)?->name;
+            if ($siteNodeName === null) {
+                continue;
+            }
+            $siteNodeName = SiteNodeName::fromNodeName($siteNodeName);
+            // The parent may be unpublished itself, i.e. without projection row.
+            try {
+                $uriPath = $folderLogic->buildChildUriPath(
+                    $candidateUriPathSegment,
+                    $finder->getByIdAndDimensionSpacePointHash($parentId, $dsp->hash),
+                    $dsp,
+                );
+            } catch (NodeNotFoundException) {
+                $uriPath = $candidateUriPathSegment;
+            }
+            foreach ($siblings as $sibling) {
+                if ($selfId !== null && $sibling->aggregateId->equals($selfId)) {
+                    continue;
+                }
+                $title = $sibling->getProperty('title');
+                $label = is_string($title) ? $title : null;
+                $collisions = $collisions->with(new Collision(
+                    $dsp,
+                    $uriPath,
+                    $siteNodeName,
+                    $sibling->aggregateId,
+                    $sibling->nodeTypeName->value,
+                    $label,
+                ));
+            }
+        }
+
+        return $collisions;
+    }
+
+    /**
+     * Whether an existing node is an unroutable folder once the given property
+     * changes are applied: changed values win, everything else comes from the
+     * node in the given workspace and dimension (not the live-only projection,
+     * so unpublished folders are judged correctly too). Feeds `$candidateIsUnroutableFolder`
+     * of {@see self::check()} for renames and target-mode changes.
+     *
+     * @param array<string, mixed> $changedPropertyValues
+     */
+    public function isUnroutableFolderAfterChange(
+        ContentRepositoryId $contentRepositoryId,
+        WorkspaceName $workspaceName,
+        NodeAggregateId $nodeAggregateId,
+        OriginDimensionSpacePoint $originDimensionSpacePoint,
+        array $changedPropertyValues,
+    ): bool {
+        $node = $this->contentRepositoryRegistry->get($contentRepositoryId)
+            ->getContentGraph($workspaceName)
+            ->getSubgraph($originDimensionSpacePoint->toDimensionSpacePoint(), VisibilityConstraints::createEmpty())
+            ->findNodeById($nodeAggregateId);
+        if ($node === null) {
+            return false;
+        }
+
+        $values = [...$node->properties->serialized()->getPlainValues(), ...$changedPropertyValues];
+        return FolderUriPathLogic::isUnroutableFolderFor(
+            (bool)($values['hideSegmentInUriPath'] ?? false),
+            is_string($values['targetMode'] ?? null) ? $values['targetMode'] : null,
+        );
     }
 
     /**
@@ -137,7 +256,7 @@ final readonly class UriCollisionCheck
             $effectiveParentPrefix = $folderLogic->buildParentUriPath($parent, $dsp);
 
             $descendantRows = $this->dbal->fetchAllAssociative(
-                'SELECT nodeAggregateId, nodetypename, uriPath FROM ' . $tableName . '
+                'SELECT nodeAggregateId, nodetypename, uriPath, parentnodeaggregateid, hideurisegment, shortcuttarget FROM ' . $tableName . '
                  WHERE dimensionSpacePointHash = :dsp
                    AND nodeAggregateId != :folderId
                    AND nodeAggregateIdPath LIKE :pathPrefix',
@@ -149,6 +268,7 @@ final readonly class UriCollisionCheck
             );
 
             foreach ($descendantRows as $row) {
+                $descendant = new DocumentNodeInfo($row);
                 $newPath = $folderLogic->computeHideToggledDescendantPath(
                     $row['uriPath'],
                     $folderUriPath,
@@ -164,6 +284,9 @@ final readonly class UriCollisionCheck
                         NodeAggregateId::fromString($row['nodeAggregateId']),
                         $contentRepositoryId,
                         $workspaceName,
+                        $folderLogic,
+                        // The toggle only moves descendants; their own routability and parent are unchanged.
+                        $folderLogic->isUnroutableFolder($descendant) ? $descendant->getParentNodeAggregateId() : null,
                     ),
                 );
             }
@@ -209,7 +332,7 @@ final readonly class UriCollisionCheck
             }
             $candidateUriPath = $folderLogic->buildChildUriPath($segment, $newParent, $dsp);
             $collisions = $collisions->merge(
-                $this->queryCollisions($tableNamePrefix . '_uri', $dsp, $candidateUriPath, $newParent->getSiteNodeName(), $nodeAggregateId, $contentRepositoryId, $workspaceName),
+                $this->queryCollisions($tableNamePrefix . '_uri', $dsp, $candidateUriPath, $newParent->getSiteNodeName(), $nodeAggregateId, $contentRepositoryId, $workspaceName, $folderLogic, $folderLogic->isUnroutableFolder($current) ? $newParentId : null),
             );
         }
 
@@ -262,7 +385,7 @@ final readonly class UriCollisionCheck
             }
             $candidateUriPath = $folderLogic->buildChildUriPath($segment, $parent, $dsp);
             $collisions = $collisions->merge(
-                $this->queryCollisions($tableNamePrefix . '_uri', $dsp, $candidateUriPath, $parent->getSiteNodeName(), $nodeAggregateId, $contentRepositoryId, $workspaceName),
+                $this->queryCollisions($tableNamePrefix . '_uri', $dsp, $candidateUriPath, $parent->getSiteNodeName(), $nodeAggregateId, $contentRepositoryId, $workspaceName, $folderLogic, $folderLogic->isUnroutableFolder($sourceRow) ? $parentId : null),
             );
         }
 
@@ -277,6 +400,8 @@ final readonly class UriCollisionCheck
         ?NodeAggregateId $selfId,
         ContentRepositoryId $contentRepositoryId,
         WorkspaceName $workspaceName,
+        FolderUriPathLogic $folderLogic,
+        ?NodeAggregateId $unroutableCandidateParentId,
     ): CollisionList {
         // uriPaths are site-relative: the same path on two different sites is
         // legal (the router disambiguates via the request's site), so only
@@ -287,7 +412,7 @@ final readonly class UriCollisionCheck
         // {@see NeosSubtreeTag::removed()}), which leaves the row in place.
         // Without this filter, a trashed page permanently blocks its own
         // uriPathSegment from ever being reused.
-        $sql = 'SELECT nodeAggregateId, nodetypename FROM ' . $tableName . '
+        $sql = 'SELECT nodeAggregateId, nodetypename, parentnodeaggregateid, hideurisegment, shortcuttarget FROM ' . $tableName . '
                 WHERE dimensionSpacePointHash = :dsp AND uriPath = :uri AND siteNodeName = :site
                 AND removed = 0';
         $params = ['dsp' => $dimensionSpacePoint->hash, 'uri' => $candidateUriPath, 'site' => $siteNodeName->value];
@@ -302,6 +427,20 @@ final readonly class UriCollisionCheck
 
         $collisions = CollisionList::empty();
         foreach ($this->dbal->fetchAllAssociative($sql, $params) as $row) {
+            // Two unroutable folders under different parents sharing a uriPath
+            // are no collision: neither URL can be reached (see
+            // FolderUriPathLogic::isUnroutableFolder()). Siblings still collide —
+            // segments stay unique per parent.
+            // The row is partial, but carries exactly the columns read here.
+            if ($unroutableCandidateParentId !== null) {
+                $existing = new DocumentNodeInfo($row);
+                if (
+                    $folderLogic->isUnroutableFolder($existing)
+                    && !$existing->getParentNodeAggregateId()->equals($unroutableCandidateParentId)
+                ) {
+                    continue;
+                }
+            }
             $nodeId = NodeAggregateId::fromString($row['nodeAggregateId']);
             $node = $subgraph->findNodeById($nodeId);
             $label = $node?->hasProperty('title') ? (string)$node->getProperty('title') : null;

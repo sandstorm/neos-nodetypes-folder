@@ -90,15 +90,33 @@ final class UriCollisionController extends ActionController
 
         $collisions = CollisionList::empty();
 
-        if ($segment !== null && isset($payload['parentNodeAggregateId'])) {
+        $parentIdValue = $payload['parentNodeAggregateId'] ?? null;
+        if ($segment !== null && is_string($parentIdValue)) {
+            $parentId = NodeAggregateId::fromString($parentIdValue);
             $collisions = $collisions->merge($this->uriCollisionCheck->check(
                 $contentRepositoryId,
                 $workspaceName,
                 $selfId,
-                NodeAggregateId::fromString((string)$payload['parentNodeAggregateId']),
+                $parentId,
                 $segment,
-                $hide ?? false,
+                // The Inspector only edits existing nodes; a brand-new node
+                // (no selfId) is treated as routable, i.e. checked strictly.
+                $selfId !== null && $this->uriCollisionCheck->isUnroutableFolderAfterChange(
+                    $contentRepositoryId,
+                    $workspaceName,
+                    $selfId,
+                    $originDsp,
+                    $propertyValues,
+                ),
                 $originDsp,
+            ));
+            $collisions = $collisions->merge($this->uriCollisionCheck->checkSiblings(
+                $contentRepositoryId,
+                $workspaceName,
+                $selfId,
+                $parentId,
+                $segment,
+                $originDsp->toDimensionSpacePoint(),
             ));
         }
 

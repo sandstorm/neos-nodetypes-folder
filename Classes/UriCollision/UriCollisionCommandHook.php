@@ -12,11 +12,10 @@ use Neos\ContentRepository\Core\Feature\NodeCreation\Command\CreateNodeAggregate
 use Neos\ContentRepository\Core\Feature\NodeModification\Command\SetNodeProperties;
 use Neos\ContentRepository\Core\Feature\NodeMove\Command\MoveNodeAggregate;
 use Neos\ContentRepository\Core\Feature\NodeVariation\Command\CreateNodeVariant;
+use Neos\ContentRepository\Core\Projection\ContentGraph\VisibilityConstraints;
 use Neos\ContentRepository\Core\SharedModel\ContentRepository\ContentRepositoryId;
-use Neos\ContentRepository\Core\SharedModel\Node\NodeAggregateId;
-use Neos\Neos\FrontendRouting\Exception\NodeNotFoundException;
-use Neos\Neos\FrontendRouting\Projection\DocumentUriPathFinder;
 use Neos\ContentRepositoryRegistry\ContentRepositoryRegistry;
+use Sandstorm\NodeTypes\Folder\FrontendRouting\Projection\FolderUriPathLogic;
 
 /**
  * Rejects commands that would write a node with an effective uriPath that
@@ -64,7 +63,16 @@ final readonly class UriCollisionCommandHook implements CommandHookInterface
         if ($segment === null) {
             return null;
         }
-        $hide = (bool)($command->initialPropertyValues->values['hideSegmentInUriPath'] ?? false);
+        // Hooks run before the CR merges NodeType defaults into the event, so
+        // without this a folder created via the UI (which sends neither
+        // hideSegmentInUriPath nor targetMode) would look opaque/redirecting.
+        $nodeType = $this->contentRepositoryRegistry->get($this->contentRepositoryId)
+            ->getNodeTypeManager()
+            ->getNodeType($command->nodeTypeName);
+        $values = array_merge(
+            $nodeType?->getDefaultValuesForProperties() ?? [],
+            $command->initialPropertyValues->values,
+        );
 
         return $this->uriCollisionCheck->check(
             $this->contentRepositoryId,
@@ -72,9 +80,19 @@ final readonly class UriCollisionCommandHook implements CommandHookInterface
             $command->nodeAggregateId,
             $command->parentNodeAggregateId,
             $segment,
-            $hide,
+            FolderUriPathLogic::isUnroutableFolderFor(
+                (bool)($values['hideSegmentInUriPath'] ?? false),
+                is_string($values['targetMode'] ?? null) ? $values['targetMode'] : null,
+            ),
             $command->originDimensionSpacePoint,
-        );
+        )->merge($this->uriCollisionCheck->checkSiblings(
+            $this->contentRepositoryId,
+            $command->workspaceName,
+            $command->nodeAggregateId,
+            $command->parentNodeAggregateId,
+            $segment,
+            $command->originDimensionSpacePoint->toDimensionSpacePoint(),
+        ));
     }
 
     private function checkSetProperties(SetNodeProperties $command): ?CollisionList
@@ -82,34 +100,50 @@ final readonly class UriCollisionCommandHook implements CommandHookInterface
         $values = $command->propertyValues->values;
         $segmentChanged = array_key_exists('uriPathSegment', $values) && $values['uriPathSegment'] !== null;
         $hideChanged = array_key_exists('hideSegmentInUriPath', $values);
+        // A folder's own URL becomes reachable when it stops being `noTarget`.
+        $targetModeChanged = array_key_exists('targetMode', $values);
 
-        if (!$segmentChanged && !$hideChanged) {
+        if (!$segmentChanged && !$hideChanged && !$targetModeChanged) {
             return null;
         }
 
-        $contentRepository = $this->contentRepositoryRegistry->get($this->contentRepositoryId);
-        $finder = $contentRepository->projectionState(DocumentUriPathFinder::class);
+        // The projection only knows live; the workspace's content graph also
+        // covers nodes that are not published yet (and thus have no row).
+        $subgraph = $this->contentRepositoryRegistry->get($this->contentRepositoryId)
+            ->getContentGraph($command->workspaceName)
+            ->getSubgraph($command->originDimensionSpacePoint->toDimensionSpacePoint(), VisibilityConstraints::createEmpty());
+        $parent = $subgraph->findParentNode($command->nodeAggregateId);
 
         $collisions = CollisionList::empty();
 
-        if ($segmentChanged) {
-            // Resolve the node's parent from the projection (any covered DSP
-            // is fine — UriCollisionCheck walks the full covered set itself).
-            $node = $this->findAnyNodeRow($finder, $command->nodeAggregateId);
-            if ($node !== null) {
-                $hide = $hideChanged
-                    ? (bool)$values['hideSegmentInUriPath']
-                    : (bool)($node->toArray()['hideurisegment'] ?? false);
+        if ($parent !== null && ($segmentChanged || $targetModeChanged)) {
+            $segment = $segmentChanged
+                ? (string)$values['uriPathSegment']
+                : $subgraph->findNodeById($command->nodeAggregateId)?->getProperty('uriPathSegment');
+            if (is_string($segment)) {
+                // UriCollisionCheck walks the full covered DSP set itself.
                 $collisions = $collisions->merge($this->uriCollisionCheck->check(
                     $this->contentRepositoryId,
                     $command->workspaceName,
                     $command->nodeAggregateId,
-                    $node->getParentNodeAggregateId(),
-                    (string)$values['uriPathSegment'],
-                    $hide,
+                    $parent->aggregateId,
+                    $segment,
+                    $this->uriCollisionCheck->isUnroutableFolderAfterChange($this->contentRepositoryId, $command->workspaceName, $command->nodeAggregateId, $command->originDimensionSpacePoint, $values),
                     $command->originDimensionSpacePoint,
                 ));
             }
+        }
+
+        $newSegment = $values['uriPathSegment'] ?? null;
+        if ($parent !== null && is_string($newSegment) && $newSegment !== '') {
+            $collisions = $collisions->merge($this->uriCollisionCheck->checkSiblings(
+                $this->contentRepositoryId,
+                $command->workspaceName,
+                $command->nodeAggregateId,
+                $parent->aggregateId,
+                $newSegment,
+                $command->originDimensionSpacePoint->toDimensionSpacePoint(),
+            ));
         }
 
         if ($hideChanged) {
@@ -130,13 +164,32 @@ final readonly class UriCollisionCommandHook implements CommandHookInterface
             // Sibling reorder under the same parent cannot shift the path.
             return null;
         }
-        return $this->uriCollisionCheck->checkMove(
+        $collisions = $this->uriCollisionCheck->checkMove(
             $this->contentRepositoryId,
             $command->workspaceName,
             $command->nodeAggregateId,
             $command->newParentNodeAggregateId,
             $command->dimensionSpacePoint,
         );
+
+        // Read the segment from the workspace: the moved node may be unpublished.
+        $movedNode = $this->contentRepositoryRegistry->get($this->contentRepositoryId)
+            ->getContentGraph($command->workspaceName)
+            ->getSubgraph($command->dimensionSpacePoint, VisibilityConstraints::createEmpty())
+            ->findNodeById($command->nodeAggregateId);
+        $segment = $movedNode?->getProperty('uriPathSegment');
+        if (!is_string($segment) || $segment === '') {
+            return $collisions;
+        }
+
+        return $collisions->merge($this->uriCollisionCheck->checkSiblings(
+            $this->contentRepositoryId,
+            $command->workspaceName,
+            $command->nodeAggregateId,
+            $command->newParentNodeAggregateId,
+            $segment,
+            $command->dimensionSpacePoint,
+        ));
     }
 
     private function checkVariant(CreateNodeVariant $command): ?CollisionList
@@ -160,24 +213,5 @@ final readonly class UriCollisionCommandHook implements CommandHookInterface
             return null;
         }
         return (string)$value;
-    }
-
-    private function findAnyNodeRow(
-        DocumentUriPathFinder $finder,
-        NodeAggregateId $nodeAggregateId,
-    ): ?\Neos\Neos\FrontendRouting\Projection\DocumentNodeInfo {
-        // The projection doesn't expose a "first row across DSPs" lookup, so
-        // we ask the variation graph for the full set and try each until one
-        // exists. Any one is enough — UriCollisionCheck re-derives the full
-        // covered set internally.
-        $cr = $this->contentRepositoryRegistry->get($this->contentRepositoryId);
-        foreach ($cr->getVariationGraph()->getDimensionSpacePoints() as $dsp) {
-            try {
-                return $finder->getByIdAndDimensionSpacePointHash($nodeAggregateId, $dsp->hash);
-            } catch (NodeNotFoundException) {
-                continue;
-            }
-        }
-        return null;
     }
 }
