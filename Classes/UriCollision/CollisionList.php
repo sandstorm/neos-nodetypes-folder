@@ -12,9 +12,17 @@ final readonly class CollisionList implements \IteratorAggregate, \Countable
     /** @var list<Collision> */
     private array $items;
 
+    /**
+     * Dedupes by (dimension, other node): the projection check and the
+     * workspace sibling check both report an already-published sibling.
+     */
     public function __construct(Collision ...$items)
     {
-        $this->items = array_values($items);
+        $unique = [];
+        foreach ($items as $item) {
+            $unique[$item->dimensionSpacePoint->hash . '|' . $item->otherNodeAggregateId->value] ??= $item;
+        }
+        $this->items = array_values($unique);
     }
 
     public static function empty(): self
